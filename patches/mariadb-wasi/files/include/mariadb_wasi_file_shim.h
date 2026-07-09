@@ -4,6 +4,7 @@
 #if defined(__wasi__)
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -64,6 +65,42 @@ static inline int wasmtime_mariadb_file_open3(const char *path, int flags,
 
 static inline int wasmtime_mariadb_file_open2(const char *path, int flags) {
   return wasmtime_mariadb_file_open3(path, flags, 0);
+}
+
+static inline int wasmtime_mariadb_file_mkstemp(char *path) {
+  static uint32_t counter = 0;
+  static const char alphabet[] =
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const size_t alphabet_len = sizeof(alphabet) - 1;
+  size_t len = strlen(path);
+
+  if (len < 6 || memcmp(path + len - 6, "XXXXXX", 6) != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  for (uint32_t attempt = 0; attempt < 10000; attempt++) {
+    uintptr_t value =
+        (uintptr_t)__sync_fetch_and_add(&counter, 1) ^ (uintptr_t)path;
+    value ^= (uintptr_t)&counter;
+
+    for (size_t i = 0; i < 6; i++) {
+      value = value * 1103515245u + 12345u + i;
+      path[len - 6 + i] = alphabet[value % alphabet_len];
+    }
+
+    int fd = wasmtime_mariadb_file_open3(path, O_RDWR | O_CREAT | O_EXCL,
+                                         S_IRUSR | S_IWUSR);
+    if (fd >= 0) {
+      return fd;
+    }
+    if (errno != EEXIST) {
+      return -1;
+    }
+  }
+
+  errno = EEXIST;
+  return -1;
 }
 
 #define WASMTIME_MARIADB_FILE_OPEN_SELECT(_1, _2, _3, NAME, ...) NAME

@@ -28,12 +28,14 @@ Command:
 ```
 
 The harness starts a fresh Wasmtime server/datadir per test, waits for TCP
-readiness, loads `scripts/mtr-extern-init.sql`, then runs:
+readiness, starts a small Unix-socket-to-TCP proxy for `mysqltest`
+`localhost` connections, loads `scripts/mtr-extern-init.sql`, then runs:
 
 ```sh
 perl /usr/share/mariadb-test/mariadb-test-run.pl \
   --extern host=127.0.0.1 \
   --extern port="$port" \
+  --extern socket="$socket_path" \
   --extern user=root \
   --extern ssl=0 \
   --client-bindir=/usr/bin \
@@ -50,18 +52,22 @@ Versions:
   binary and runner. The source tree has 11.4 tests, but its runner needed a
   built `my_safe_process`; this first pass used Fedora's packaged test tools.
 
-Raw logs:
+The server runner also preopens the smoke output directory at the same guest
+path, and preopens the MTR `std_data` directory as guest `/std_data`.
 
-- `build/mtr-extern-smoke/summary.tsv`
-- `build/mtr-extern-smoke/<test_name>/mtr.log`
-- `build/mtr-extern-smoke/<test_name>/init.stdout`
-- `build/mtr-extern-smoke/<test_name>/init.stderr`
-- `build/mtr-extern-smoke/<test_name>/server/mariadbd-runtime.err`
+Raw logs from the latest run:
+
+- `build/mtr-extern-smoke-current2/summary.tsv`
+- `build/mtr-extern-smoke-current2/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current2/<test_name>/init.stdout`
+- `build/mtr-extern-smoke-current2/<test_name>/init.stderr`
+- `build/mtr-extern-smoke-current2/<test_name>/server/mariadbd-runtime.err`
 
 The init SQL is intentionally minimal. It creates `mysql.proc`,
-`mysql.procs_priv`, and `mtr.add_suppression()` using InnoDB so tests can get
-past MTR's own warning-suppression setup without requiring currently broken
-Aria/MyISAM system tables.
+`mysql.procs_priv`, `mysql.func`, time-zone tables, statistics tables,
+`mysql.gtid_slave_pos`, and `mtr.add_suppression()` using InnoDB so tests can
+get past MTR's own warning-suppression and system-table setup without requiring
+a full datadir initialization.
 
 ## Summary
 
@@ -80,70 +86,70 @@ Passed:
 
 | Test | First failure |
 | --- | --- |
-| `main.select` | `CREATE TEMPORARY TABLE tmp ENGINE=MyISAM SELECT * FROM t3` failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 'tmp'`. |
-| `main.insert` | `CREATE TABLE t1 (sid CHAR(20), id INT(2) NOT NULL AUTO_INCREMENT, KEY(sid, id))` failed with `ER_WRONG_AUTO_KEY (1075)`. This appears tied to running the suite with InnoDB as default storage engine instead of the test's expected engine behavior. |
-| `main.update` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
-| `main.delete` | Insert into an explicit `ENGINE=MyISAM` table failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't1'`. |
-| `main.create` | `INSERT INTO t1 VALUES (""),(NULL)` on `CHAR(0) NOT NULL` failed with `ER_BAD_NULL_ERROR (1048)`, while the test expected the legacy result output. |
-| `main.drop` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
-| `main.type_int` | `INFORMATION_SCHEMA.COLUMNS ... ORDER BY ...` failed with `Incorrect file format '(temporary)'`. |
-| `main.type_varchar` | Test tried to access `/tmp/data//upgrade1/vchar.frm`; `mysqltest` rejected it because it is outside `MYSQLTEST_VARDIR` and `MYSQL_TMP_DIR`. |
-| `main.func_math` | Insert into `t1` failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't1'`. |
-| `main.func_str` | Test `connect conn1,localhost,...` tried Unix socket `/tmp/mysqld.sock`; this harness exposes TCP only. |
-| `main.join` | Insert into `t1` failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't1'`. |
-| `main.union` | Insert into `t1` failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't1'`. |
-| `main.order_by` | Insert into an explicit `ENGINE=MyISAM PACK_KEYS=1` table failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't1'`. |
-| `main.group_by` | Query using grouping/left join failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format '(temporary)'`. |
-| `main.subselect` | Insert into an explicit `ENGINE=MyISAM` table failed with `HA_ERR_NOT_A_TABLE (130): Incorrect file format 't8'`. |
-| `innodb.innodb` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
-| `innodb.create_select` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
-| `innodb.foreign_key` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
-| `innodb.alter_table` | `include/have_innodb.inc` failed querying `information_schema.system_variables`; internal temporary table opened as `Incorrect file format '(temporary)'`. |
+| `main.select` | Insert of `18446744073709551615` into an integer column failed with `ER_WARN_DATA_OUT_OF_RANGE (1264)`. |
+| `main.insert` | `CREATE TABLE t1 (sid CHAR(20), id INT(2) NOT NULL AUTO_INCREMENT, KEY(sid, id))` failed with `ER_WRONG_AUTO_KEY (1075)`, consistent with the smoke server running InnoDB as the default engine. |
+| `main.update` | Result diff against Fedora's `main/update.result`. The test now runs past the previous socket and internal-temp-table blockers. |
+| `main.delete` | `DELETE FROM t1 AS a1 WHERE a1.c1 = 2` failed with `ER_PARSE_ERROR (1064)`. This is an 11.8 packaged-test expectation against an 11.4 server. |
+| `main.create` | `INSERT INTO t1 VALUES (""),(NULL)` on `CHAR(0) NOT NULL` failed with `ER_BAD_NULL_ERROR (1048)`. |
+| `main.drop` | `mysqltest` rejected `/tmp/data//mysql_test/#sql-347f_6.frm` because it is outside `MYSQLTEST_VARDIR` and `MYSQL_TMP_DIR`. |
+| `main.type_int` | Result diff against Fedora's `main/type_int.result`, mostly default engine/charset/collation output differences. |
+| `main.type_varchar` | `mysqltest` rejected `/tmp/data//upgrade1/vchar.frm` because it is outside `MYSQLTEST_VARDIR` and `MYSQL_TMP_DIR`. |
+| `main.func_math` | Result diff against Fedora's `main/func_math.result`; the earlier missing `std_data` file is fixed. |
+| `main.func_str` | Result diff against Fedora's `main/func_str.result`; the earlier Unix-socket and outfile-preopen failures are fixed. |
+| `main.join` | Result diff against Fedora's `main/join.result`. |
+| `main.union` | InnoDB rejected a foreign key definition with `errno: 150 "Foreign key constraint is incorrectly formed"`. |
+| `main.order_by` | Result diff against Fedora's `main/order_by.result`, including `ERROR 21000: Subquery returns more than 1 row`. |
+| `main.group_by` | Result diff against Fedora's `main/group_by.result`; server logs also show an `Out of sort memory` error in this area. |
+| `main.subselect` | `mysqltest` `remove_file` command failed with `my_errno: 2`, `errno: 2`. |
+| `innodb.innodb` | `CREATE TABLE ... ROW_FORMAT=FIXED` failed with `ER_CANT_CREATE_TABLE (errno: 140 "Wrong create options")`. |
+| `innodb.create_select` | Result diff: packaged 11.8 result expects `Truncated incorrect BOOLEAN value`, while 11.4 reports `Truncated incorrect DOUBLE value`. |
+| `innodb.foreign_key` | MTR restart include failed to open `/tmp/data/(none).pid`; external-mode restart assumptions do not match this harness. |
+| `innodb.alter_table` | Result diff against Fedora's `suite/innodb/r/alter_table.result`. |
 
 ## Failure buckets
 
-The failures cluster into a few concrete areas:
+The failures now cluster into a few concrete areas:
 
-1. MyISAM/Aria table files are still unusable in this WASI port. Explicit
-   MyISAM temporary tables and several default table paths fail with
-   `Incorrect file format`.
-2. Internal temporary tables are still a major blocker. Several
-   `information_schema` and grouping queries fail on `'(temporary)'` with
-   `HA_ERR_NOT_A_TABLE`.
-3. Some `main` tests assume legacy default-engine behavior. Running the port
-   with InnoDB by default exposes differences in auto-increment key validation
-   and `CHAR(0) NOT NULL` handling.
-4. MTR's external-server mode assumes filesystem paths and sometimes Unix
-   sockets. This conflicts with the current TCP-only runner and `/tmp` guest
-   preopen mapping.
-5. The MTR system-table bootstrap is only a smoke-test shim. It removes the
-   `mtr.add_suppression()` setup blocker, but it is not a complete datadir
-   initialization.
+1. Packaged-test/server-version mismatch. This run uses Fedora's 11.8.8 MTR
+   package against an 11.4.12 server, so some syntax and expected-result files
+   do not match the server under test.
+2. Default engine and charset/collation differences. The smoke server defaults
+   to InnoDB/latin1, while many packaged `main` results expect MyISAM and newer
+   default charset/collation output.
+3. MTR external-mode filesystem assumptions. Some `mysqltest` commands reject
+   `/tmp/data/...` paths because they are outside the allowed vardir/tmpdir
+   sandbox, even though the server can access them.
+4. MTR restart/PID assumptions. `innodb.foreign_key` tries to use restart
+   includes that expect a normal MTR-managed mysqld pid file.
+5. Remaining real runtime differences, including sort-memory pressure and
+   some SQL behavior differences in expression typing, foreign key validation,
+   and row format handling.
 
-## Follow-up probe
+## Fixed in this pass
 
-I also reran a subset with:
+The latest run no longer contains these earlier blockers:
 
-```sh
-OUT_DIR=build/mtr-extern-smoke-memory-tmp \
-BASE_PORT=3370 \
-SERVER_ARGS='--default-tmp-storage-engine=MEMORY' \
-./scripts/run-mtr-extern-smoke.sh main.select main.update innodb.innodb innodb.foreign_key
-```
+- `Incorrect file format` for MyISAM tables or internal temporary tables.
+- Unix socket connection failures for `connect ...,localhost,...`.
+- `chmod()` / `fchmod()` returning WASI `ENOSYS` during trigger metadata writes.
+- Server-side `Capabilities insufficient` for MTR vardir outfile writes.
+- Missing `/std_data/...` for packaged `LOAD DATA INFILE` tests.
 
-It did not move the observed failures: `main.select` still failed on explicit
-`ENGINE=MyISAM`, and the InnoDB-gated tests still failed on internal
-`'(temporary)'` table handling.
+Direct repros that now pass:
+
+- Explicit MyISAM table create/insert/select.
+- `CREATE TEMPORARY TABLE ... ENGINE=MyISAM SELECT ...`.
+- A grouped InnoDB query requiring an internal temporary table.
 
 ## Next likely fixes
 
-1. Fix internal temporary table storage so `information_schema` and grouped
-   query paths work reliably.
-2. Route/fix Aria and MyISAM file I/O, or disable those engines more
-   completely and force tests away from them.
-3. Add a real datadir initialization step with system tables using a working
-   engine under WASI.
-4. Add a Unix socket bridge or patch MTR external connection options for tests
-   that issue `connect ...,localhost,...`.
-5. Build the pinned MariaDB 11.4 `mariadb-test`/`mysqltest` tooling for
-   version-matched results.
+1. Build and use pinned MariaDB 11.4 `mariadb-test`/`mysqltest` tooling for
+   version-matched expected results.
+2. Add a better external-mode mapping for `/tmp/data/...` paths that
+   `mysqltest` path-safety checks currently reject.
+3. Teach the harness how to skip or emulate MTR restart includes for an
+   externally managed Wasmtime server.
+4. Revisit server defaults for MTR runs, especially default storage engine and
+   charset/collation, without changing the user-facing InnoDB quick start.
+5. Increase or tune sort buffers for query-heavy tests and investigate the
+   remaining SQL behavior diffs.

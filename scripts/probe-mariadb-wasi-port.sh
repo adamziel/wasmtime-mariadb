@@ -129,8 +129,16 @@ patch_mariadb_source() {
   ' "$src/mysys/my_open.c"
 
   perl -0pi -e '
+    s/#else\n  if \(MyFlags & MY_NOSYMLINKS\)\n    fd = open_nosymlinks\(FileName, Flags \| O_CLOEXEC, my_umask\);\n  else\n    fd = open\(FileName, Flags \| O_CLOEXEC, my_umask\);\n#endif/#else\n#if defined(__wasi__)\n  fd = open(FileName, Flags | O_CLOEXEC, my_umask);\n#else\n  if (MyFlags \& MY_NOSYMLINKS)\n    fd = open_nosymlinks(FileName, Flags | O_CLOEXEC, my_umask);\n  else\n    fd = open(FileName, Flags | O_CLOEXEC, my_umask);\n#endif\n#endif/;
+  ' "$src/mysys/my_open.c"
+
+  perl -0pi -e '
     s/(#include "mysys_err\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define open(...) wasmtime_mariadb_file_open(__VA_ARGS__)\n#endif\n/;
   ' "$src/mysys/my_create.c"
+
+  perl -0pi -e '
+    s/(#include\s+<my_dir\.h>[^\n]*\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define fstat(...) wasmtime_mariadb_file_fstat(__VA_ARGS__)\n#endif\n/;
+  ' "$src/mysys/my_lib.c"
 
   perl -0pi -e '
     s/(#include <errno\.h>\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define read(...) wasmtime_mariadb_file_read(__VA_ARGS__)\n#endif\n/;
@@ -173,6 +181,10 @@ patch_mariadb_source() {
   perl -0pi -e '
     s/(  DBUG_PRINT\("my",\("fd: %d  Op: %d  start: %ld  Length: %ld  MyFlags: %lu",\n\s+fd,locktype,\(long\) start,\(long\) length,MyFlags\)\);\n)/$1#if defined(__wasi__)\n  DBUG_RETURN(0);\n#endif\n/s;
   ' "$src/mysys/my_lock.c"
+
+  perl -0pi -e '
+    s/(#include <errno\.h>\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define open(...) wasmtime_mariadb_file_open(__VA_ARGS__)\n#define close(...) wasmtime_mariadb_file_close(__VA_ARGS__)\n#define mkstemp(...) wasmtime_mariadb_file_mkstemp(__VA_ARGS__)\n#endif\n/;
+  ' "$src/mysys/mf_tempfile.c"
 
   perl -0pi -e '
     s/IF\(UNIX\)\n SET \(MYSYS_SOURCES \$\{MYSYS_SOURCES\} my_addr_resolve\.c my_setuser\.c\)\nENDIF\(\)/IF(UNIX)\n SET (MYSYS_SOURCES \${MYSYS_SOURCES} my_addr_resolve.c my_setuser.c)\nELSEIF(CMAKE_SYSTEM_NAME STREQUAL "WASI")\n SET (MYSYS_SOURCES \${MYSYS_SOURCES} my_setuser.c)\nENDIF()/;

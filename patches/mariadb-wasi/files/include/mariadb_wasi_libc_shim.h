@@ -294,6 +294,21 @@ static inline int wasmtime_mariadb_dup2(int oldfd, int newfd) {
 #define dup wasmtime_mariadb_dup
 #define dup2 wasmtime_mariadb_dup2
 
+static inline int wasmtime_mariadb_chmod(const char *path, mode_t mode) {
+  (void)path;
+  (void)mode;
+  return 0;
+}
+
+static inline int wasmtime_mariadb_fchmod(int fd, mode_t mode) {
+  (void)fd;
+  (void)mode;
+  return 0;
+}
+
+#define chmod wasmtime_mariadb_chmod
+#define fchmod wasmtime_mariadb_fchmod
+
 static inline int wasmtime_mariadb_pthread_kill(pthread_t thread, int signum) {
   (void)thread;
   (void)signum;

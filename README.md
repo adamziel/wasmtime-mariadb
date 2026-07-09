@@ -206,8 +206,9 @@ cargo check --features dev-fixture
 - Crash recovery, XA/two-phase commit, replication, and production durability
   semantics have not been validated. The documented runner also uses
   `--debug-no-sync`.
-- MyISAM and Aria are compiled in but are not the verified path for this
-  prototype.
+- Basic MyISAM create/insert/select and temporary-table paths work in the
+  current build, but InnoDB remains the documented path. Aria is compiled in
+  but not meaningfully validated yet.
 - `DROP TABLE IF EXISTS` for nonexistent disk-engine tables can report a
   `.par` read-only error in this stripped build, so the benchmark uses unique
   table names instead of pre-dropping.

@@ -11,6 +11,10 @@ init_sql="$root/scripts/mtr-extern-init.sql"
 if [[ "$out_dir" != /* ]]; then
   out_dir="$root/$out_dir"
 fi
+runner_args="--preopen $out_dir=$out_dir"
+if [[ -d "$mtr_dir/std_data" ]]; then
+  runner_args+=" --preopen $mtr_dir/std_data=/std_data"
+fi
 
 tests=("$@")
 if [[ "${#tests[@]}" -eq 0 ]]; then
@@ -62,7 +66,18 @@ summary="$out_dir/summary.tsv"
 printf 'test\tstatus\texit_code\tlog\n' > "$summary"
 
 server_pid=""
+proxy_pid=""
+proxy_socket=""
 cleanup_server() {
+  if [[ -n "$proxy_pid" ]]; then
+    kill "$proxy_pid" 2>/dev/null || true
+    wait "$proxy_pid" 2>/dev/null || true
+    proxy_pid=""
+  fi
+  if [[ -n "$proxy_socket" ]]; then
+    rm -f "$proxy_socket"
+    proxy_socket=""
+  fi
   if [[ -n "$server_pid" ]]; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
@@ -89,6 +104,30 @@ wait_ready() {
   return 1
 }
 
+start_socket_proxy() {
+  local port="$1"
+  local socket_path="$2"
+  local log_dir="$3"
+
+  "$root/scripts/tcp-unix-proxy.py" "$socket_path" 127.0.0.1 "$port" \
+    >"$log_dir/socket-proxy.stdout" 2>"$log_dir/socket-proxy.stderr" &
+  proxy_pid=$!
+  proxy_socket="$socket_path"
+
+  for _ in $(seq 1 30); do
+    if [[ -S "$socket_path" ]]; then
+      return 0
+    fi
+    if ! kill -0 "$proxy_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  cat "$log_dir/socket-proxy.stderr" 2>/dev/null || true
+  return 1
+}
+
 for idx in "${!tests[@]}"; do
   test_name="${tests[$idx]}"
   port=$((base_port + idx))
@@ -97,16 +136,18 @@ for idx in "${!tests[@]}"; do
   run_dir="$test_dir/server"
   vardir="$test_dir/var"
   log_file="$test_dir/mtr.log"
+  socket_path="/tmp/wasmtime-mariadb-mtr-$port.sock"
   mkdir -p "$test_dir"
 
   cleanup_server
-  rm -rf "$run_dir" "$vardir"
-  RUN_DIR="$run_dir" PORT="$port" "$root/scripts/run-server.sh" "${extra_server_args[@]}" >"$test_dir/server.stdout" 2>"$test_dir/server.stderr" &
+  rm -rf "$run_dir" "$vardir" "$socket_path"
+  RUN_DIR="$run_dir" PORT="$port" RUNNER_ARGS="$runner_args" \
+    "$root/scripts/run-server.sh" "${extra_server_args[@]}" >"$test_dir/server.stdout" 2>"$test_dir/server.stderr" &
   server_pid=$!
 
   status="FAIL"
   exit_code=0
-  if wait_ready "$port" "$run_dir"; then
+  if wait_ready "$port" "$run_dir" && start_socket_proxy "$port" "$socket_path" "$test_dir"; then
     mariadb --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 <"$init_sql" >"$test_dir/init.stdout" 2>"$test_dir/init.stderr"
 
     set +e
@@ -115,6 +156,7 @@ for idx in "${!tests[@]}"; do
       perl mariadb-test-run.pl \
         --extern host=127.0.0.1 \
         --extern port="$port" \
+        --extern socket="$socket_path" \
         --extern user=root \
         --extern ssl=0 \
         --client-bindir=/usr/bin \

@@ -11,6 +11,7 @@ else
 fi
 run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
+read -r -a extra_runner_args <<< "${RUNNER_ARGS:-}"
 
 if [[ ! -x "$bin" ]]; then
   echo "runner binary not found: $bin" >&2
@@ -30,6 +31,7 @@ exec "$bin" \
   --preopen "$run_dir=/tmp" \
   --env TMPDIR=/tmp/tmp \
   --env HOME=/tmp \
+  "${extra_runner_args[@]}" \
   -- \
   --no-defaults \
   --console \

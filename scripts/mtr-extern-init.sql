@@ -36,6 +36,87 @@ CREATE TABLE IF NOT EXISTS proc (
   PRIMARY KEY (db,name,type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Stored Procedures';
 
+CREATE TABLE IF NOT EXISTS func (
+  name char(64) binary DEFAULT '' NOT NULL,
+  ret tinyint(1) DEFAULT '0' NOT NULL,
+  dl char(128) DEFAULT '' NOT NULL,
+  type enum('function','aggregate') COLLATE utf8mb3_general_ci NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='User defined functions';
+
+CREATE TABLE IF NOT EXISTS time_zone_name (
+  Name char(64) NOT NULL,
+  Time_zone_id int unsigned NOT NULL,
+  PRIMARY KEY (Name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Time zone names';
+
+CREATE TABLE IF NOT EXISTS time_zone (
+  Time_zone_id int unsigned NOT NULL auto_increment,
+  Use_leap_seconds enum('Y','N') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  PRIMARY KEY (Time_zone_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Time zones';
+
+CREATE TABLE IF NOT EXISTS time_zone_transition (
+  Time_zone_id int unsigned NOT NULL,
+  Transition_time bigint signed NOT NULL,
+  Transition_type_id int unsigned NOT NULL,
+  PRIMARY KEY (Time_zone_id, Transition_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Time zone transitions';
+
+CREATE TABLE IF NOT EXISTS time_zone_transition_type (
+  Time_zone_id int unsigned NOT NULL,
+  Transition_type_id int unsigned NOT NULL,
+  `Offset` int signed DEFAULT 0 NOT NULL,
+  Is_DST tinyint unsigned DEFAULT 0 NOT NULL,
+  Abbreviation char(8) DEFAULT '' NOT NULL,
+  PRIMARY KEY (Time_zone_id, Transition_type_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Time zone transition types';
+
+CREATE TABLE IF NOT EXISTS time_zone_leap_second (
+  Transition_time bigint signed NOT NULL,
+  Correction int signed NOT NULL,
+  PRIMARY KEY (Transition_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Leap seconds information for time zones';
+
+CREATE TABLE IF NOT EXISTS table_stats (
+  db_name varchar(64) NOT NULL,
+  table_name varchar(64) NOT NULL,
+  cardinality bigint(21) unsigned DEFAULT NULL,
+  PRIMARY KEY (db_name,table_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Statistics on Tables';
+
+CREATE TABLE IF NOT EXISTS column_stats (
+  db_name varchar(64) NOT NULL,
+  table_name varchar(64) NOT NULL,
+  column_name varchar(64) NOT NULL,
+  min_value varbinary(255) DEFAULT NULL,
+  max_value varbinary(255) DEFAULT NULL,
+  nulls_ratio decimal(12,4) DEFAULT NULL,
+  avg_length decimal(12,4) DEFAULT NULL,
+  avg_frequency decimal(12,4) DEFAULT NULL,
+  hist_size tinyint unsigned,
+  hist_type enum('SINGLE_PREC_HB','DOUBLE_PREC_HB','JSON_HB'),
+  histogram longblob,
+  PRIMARY KEY (db_name,table_name,column_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Statistics on Columns';
+
+CREATE TABLE IF NOT EXISTS index_stats (
+  db_name varchar(64) NOT NULL,
+  table_name varchar(64) NOT NULL,
+  index_name varchar(64) NOT NULL,
+  prefix_arity int(11) unsigned NOT NULL,
+  avg_frequency decimal(12,4) DEFAULT NULL,
+  PRIMARY KEY (db_name,table_name,index_name,prefix_arity)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Statistics on Indexes';
+
+CREATE TABLE IF NOT EXISTS gtid_slave_pos (
+  domain_id int unsigned NOT NULL,
+  sub_id bigint unsigned NOT NULL,
+  server_id int unsigned NOT NULL,
+  seq_no bigint unsigned NOT NULL,
+  PRIMARY KEY (domain_id, sub_id)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 COMMENT='Replication slave GTID position';
+
 CREATE TABLE IF NOT EXISTS procs_priv (
   Host char(255) binary DEFAULT '' NOT NULL,
   Db char(64) binary DEFAULT '' NOT NULL,
