@@ -68,31 +68,38 @@ defaults such as `--default-storage-engine=MyISAM`,
 
 Raw logs from the latest run:
 
-- `build/mtr-extern-smoke-current3/summary.tsv`
-- `build/mtr-extern-smoke-current3/<test_name>/mtr.log`
-- `build/mtr-extern-smoke-current3/<test_name>/init.stdout`
-- `build/mtr-extern-smoke-current3/<test_name>/init.stderr`
-- `build/mtr-extern-smoke-current3/<test_name>/var/mysqld.1/mariadbd-runtime.err`
+- `build/mtr-extern-smoke-current4/summary.tsv`
+- `build/mtr-extern-smoke-current4/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current4/<test_name>/init.stdout`
+- `build/mtr-extern-smoke-current4/<test_name>/init.stderr`
+- `build/mtr-extern-smoke-current4/<test_name>/var/mysqld.1/mariadbd-runtime.err`
 
 The init SQL is intentionally minimal. It creates `mysql.proc`,
-`mysql.global_priv`, `mysql.servers`, `mysql.event`, `mysql.procs_priv`,
-`mysql.func`, time-zone tables, statistics tables, `mysql.gtid_slave_pos`, and
-`mtr.add_suppression()` without requiring a full datadir initialization.
-`mysql.proc` is Aria because `main.drop` has a file-level regression test that
-expects `proc.MAD` and `proc.MAI`.
+`mysql.global_priv`, privilege tables, log tables, `mysql.servers`,
+`mysql.event`, `mysql.procs_priv`, `mysql.func`, time-zone tables, statistics
+tables, `mysql.gtid_slave_pos`, and `mtr.add_suppression()` without requiring a
+full datadir initialization. `mysql.proc` is Aria because `main.drop` has a
+file-level regression test that expects `proc.MAD` and `proc.MAI`.
+
+By default the harness now starts the server once with `--skip-grant-tables` to
+load this bootstrap SQL, then restarts it with grant tables enabled before
+running MTR. The second server uses `MTR_GRANT_PORT_OFFSET=10000` by default to
+avoid short-lived TCP bind races on restart.
 
 ## Summary
 
 22 tests were run:
 
-- Passed: 11
-- Failed: 11
+- Passed: 13
+- Failed: 9
 
 Passed:
 
+- `main.select`
 - `main.insert`
 - `main.update`
 - `main.delete`
+- `main.create`
 - `main.type_int`
 - `main.func_math`
 - `main.subselect`
@@ -106,14 +113,12 @@ Passed:
 
 | Test | First failure |
 | --- | --- |
-| `main.select` | Result diff: `SHOW CREATE VIEW` reports an empty definer instead of `root@localhost`, consistent with running under `--skip-grant-tables`. |
-| `main.create` | `CREATE USER mysqltest_1` failed because the server is still running with `--skip-grant-tables`. |
-| `main.drop` | Result diff: `SHOW DATABASES` output is reduced under the minimal grant setup, and host errno is `55` rather than expected `39` for a non-empty directory. |
+| `main.drop` | Result diff: `SHOW DATABASES` output is reduced under the minimal bootstrap datadir, and host errno is `55` rather than expected `39` for a non-empty directory. |
 | `main.type_varchar` | Result diff in string-valued predicates, including `CONCAT()` / `LEFT()` / `COALESCE()` used as conditions. |
-| `main.func_str` | Result diff: several `random_bytes()` calls with coerced string/numeric lengths return `NULL` where the expected file has byte lengths, plus one binary conversion predicate differs. |
-| `main.join` | Result diff around `information_schema` metadata for `mysql.global_priv`; the minimal bootstrap does not match the full test datadir metadata. |
-| `main.union` | `SET GLOBAL slow_query_log=ON` failed because `mysql.slow_log` is not present in the minimal system schema. |
-| `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent. |
+| `main.func_str` | Result diff: `random_bytes()` returns deterministic or `NULL` results in cases where the expected file has non-`NULL` random byte lengths, plus one binary conversion predicate differs. |
+| `main.join` | Result diff around `information_schema` metadata for `mysql.global_priv`; the minimal bootstrap does not match the full MTR datadir metadata. |
+| `main.union` | Result diff: slow-query counters stay at `0`, `mysql.slow_log` does not receive the expected row, and one `information_schema.columns` metadata row is absent. |
+| `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent, and `innodb_sort_buffer_size` is present in `SHOW VARIABLES`. |
 | `main.group_by` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable for one subcase, while this build has InnoDB enabled. |
 | `innodb.innodb` | `CREATE TABLE ... ROW_FORMAT=FIXED` failed with `ER_CANT_CREATE_TABLE (errno: 140 "Wrong create options")`. |
 | `innodb.foreign_key` | MTR restart include waited for the external server to disappear and timed out. External-mode restart assumptions still do not match this harness. |
@@ -122,9 +127,9 @@ Passed:
 
 The failures now cluster into a few concrete areas:
 
-1. Incomplete grant/system-table bootstrap. `--skip-grant-tables` still causes
-   empty definers and blocks `CREATE USER`; missing log/privilege tables still
-   affect `main.union` and some metadata expectations.
+1. Remaining minimal-datadir differences. The grant-enabled restart now works
+   for this smoke set, but `SHOW DATABASES`, privilege-table metadata, and
+   table-based slow logging still do not fully match a normal MTR datadir.
 2. Expected-result variants for the exact server build. Some pinned results
    assume InnoDB is unavailable in `main` subcases, while this build has InnoDB.
 3. MTR restart assumptions. `innodb.foreign_key` tries to use restart includes
@@ -152,6 +157,15 @@ The latest run no longer contains these earlier blockers:
 - `chmod()` / `fchmod()` returning WASI `ENOSYS` during trigger metadata writes.
 - Server-side `Capabilities insufficient` for MTR vardir outfile writes.
 - Missing or inaccessible `std_data` for `LOAD DATA INFILE` tests.
+- Grant-table execution for the smoke set. The harness now restarts without
+  `--skip-grant-tables`, which flips `main.select` and `main.create` to pass.
+- Missing `mysql.db`, table/column privilege tables, role mappings, proxy
+  privileges, plugin table, `mysql.general_log`, and `mysql.slow_log`.
+
+Tests that flipped from failing to passing since `build/mtr-extern-smoke-current3`:
+
+- `main.select`
+- `main.create`
 
 Tests that flipped from failing to passing since `build/mtr-extern-smoke-current2`:
 
@@ -172,16 +186,13 @@ Direct repros that now pass:
 
 ## Next likely fixes
 
-1. Replace the minimal grant bootstrap with enough of `mariadb-install-db` to
-   run the smoke server without `--skip-grant-tables`. An opt-in
-   `MTR_RESTART_WITH_GRANTS=1` path exists, but currently fails at startup
-   because `mysql.db` and related privilege tables are missing.
-2. Add minimal `mysql.slow_log` / `mysql.general_log` tables for tests that
-   enable `log_output=TABLE`.
-3. Teach the harness how to skip, emulate, or explicitly mark MTR restart
+1. Replace the minimal grant/system-table bootstrap with enough of
+   `mariadb-install-db` to match normal MTR metadata and logging behavior more
+   closely.
+2. Teach the harness how to skip, emulate, or explicitly mark MTR restart
    includes for an externally managed Wasmtime server.
-4. Decide whether to use alternate expected-result files or targeted skips for
+3. Decide whether to use alternate expected-result files or targeted skips for
    subcases whose expected output assumes InnoDB is unavailable.
-5. Investigate the remaining SQL behavior diffs in string predicates,
+4. Investigate the remaining SQL behavior diffs in string predicates,
    `random_bytes()` argument coercion, `ANALYZE FORMAT=JSON`, and InnoDB
    `ROW_FORMAT=FIXED`.

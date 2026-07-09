@@ -23,6 +23,73 @@ INSERT IGNORE INTO global_priv (Host, User, Priv) VALUES
   ('::1', 'root', '{"access":18446744073709551615,"plugin":"mysql_native_password","authentication_string":""}'),
   ('', 'PUBLIC', '{"access":0,"is_role":true}');
 
+CREATE TABLE IF NOT EXISTS db (
+  Host char(255) binary DEFAULT '' NOT NULL,
+  Db char(64) binary DEFAULT '' NOT NULL,
+  User char(128) binary DEFAULT '' NOT NULL,
+  Select_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Insert_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Update_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Delete_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Create_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Drop_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Grant_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  References_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Index_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Alter_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Create_tmp_table_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Lock_tables_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Create_view_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Show_view_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Create_routine_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Alter_routine_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Execute_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Event_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Trigger_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Delete_history_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  Show_create_routine_priv enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  PRIMARY KEY (Host,Db,User),
+  KEY User (User)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Database privileges';
+
+CREATE TABLE IF NOT EXISTS tables_priv (
+  Host char(255) binary DEFAULT '' NOT NULL,
+  Db char(64) binary DEFAULT '' NOT NULL,
+  User char(128) binary DEFAULT '' NOT NULL,
+  Table_name char(64) binary DEFAULT '' NOT NULL,
+  Grantor varchar(384) DEFAULT '' NOT NULL,
+  Timestamp timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  Table_priv set('Select','Insert','Update','Delete','Create','Drop','Grant','References','Index','Alter','Create View','Show view','Trigger','Delete versioning rows') COLLATE utf8mb3_general_ci DEFAULT '' NOT NULL,
+  Column_priv set('Select','Insert','Update','References') COLLATE utf8mb3_general_ci DEFAULT '' NOT NULL,
+  PRIMARY KEY (Host,Db,User,Table_name),
+  KEY Grantor (Grantor)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Table privileges';
+
+CREATE TABLE IF NOT EXISTS columns_priv (
+  Host char(255) binary DEFAULT '' NOT NULL,
+  Db char(64) binary DEFAULT '' NOT NULL,
+  User char(128) binary DEFAULT '' NOT NULL,
+  Table_name char(64) binary DEFAULT '' NOT NULL,
+  Column_name char(64) binary DEFAULT '' NOT NULL,
+  Timestamp timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  Column_priv set('Select','Insert','Update','References') COLLATE utf8mb3_general_ci DEFAULT '' NOT NULL,
+  PRIMARY KEY (Host,Db,User,Table_name,Column_name)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Column privileges';
+
+CREATE TABLE IF NOT EXISTS roles_mapping (
+  Host char(255) binary DEFAULT '' NOT NULL,
+  User char(128) binary DEFAULT '' NOT NULL,
+  Role char(128) binary DEFAULT '' NOT NULL,
+  Admin_option enum('N','Y') COLLATE utf8mb3_general_ci DEFAULT 'N' NOT NULL,
+  UNIQUE (Host,User,Role)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Granted roles';
+
+CREATE TABLE IF NOT EXISTS plugin (
+  name varchar(64) DEFAULT '' NOT NULL,
+  dl varchar(128) DEFAULT '' NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci COMMENT='MySQL plugins';
+
 CREATE TABLE IF NOT EXISTS servers (
   Server_name char(64) NOT NULL DEFAULT '',
   Host varchar(2048) NOT NULL DEFAULT '',
@@ -35,6 +102,21 @@ CREATE TABLE IF NOT EXISTS servers (
   Owner varchar(512) NOT NULL DEFAULT '',
   PRIMARY KEY (Server_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='MySQL Foreign Servers table';
+
+CREATE TABLE IF NOT EXISTS proxies_priv (
+  Host char(255) binary DEFAULT '' NOT NULL,
+  User char(128) binary DEFAULT '' NOT NULL,
+  Proxied_host char(255) binary DEFAULT '' NOT NULL,
+  Proxied_user char(128) binary DEFAULT '' NOT NULL,
+  With_grant bool DEFAULT 0 NOT NULL,
+  Grantor varchar(384) DEFAULT '' NOT NULL,
+  Timestamp timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (Host,User,Proxied_host,Proxied_user),
+  KEY Grantor (Grantor)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='User proxy privileges';
+
+INSERT IGNORE INTO proxies_priv (Host, User, Proxied_host, Proxied_user, With_grant, Grantor)
+VALUES ('localhost', 'root', '', '', TRUE, '');
 
 CREATE TABLE IF NOT EXISTS event (
   db char(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_bin NOT NULL DEFAULT '',
@@ -61,6 +143,28 @@ CREATE TABLE IF NOT EXISTS event (
   body_utf8 longblob,
   PRIMARY KEY (db,name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Events';
+
+SET @have_csv = (
+  SELECT COUNT(*) FROM information_schema.engines
+  WHERE engine = 'CSV' AND support <> 'NO'
+);
+SET @create_general_log = IF(
+  @have_csv <> 0,
+  'CREATE TABLE IF NOT EXISTS general_log (event_time TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, user_host MEDIUMTEXT NOT NULL, thread_id BIGINT(21) UNSIGNED NOT NULL, server_id INTEGER UNSIGNED NOT NULL, command_type VARCHAR(64) NOT NULL, argument MEDIUMTEXT NOT NULL) ENGINE=CSV DEFAULT CHARSET=utf8mb3 COMMENT="General log"',
+  'CREATE TABLE IF NOT EXISTS general_log (event_time TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, user_host MEDIUMTEXT NOT NULL, thread_id BIGINT(21) UNSIGNED NOT NULL, server_id INTEGER UNSIGNED NOT NULL, command_type VARCHAR(64) NOT NULL, argument MEDIUMTEXT NOT NULL) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COMMENT="General log"'
+);
+PREPARE stmt FROM @create_general_log;
+EXECUTE stmt;
+DROP PREPARE stmt;
+
+SET @create_slow_log = IF(
+  @have_csv <> 0,
+  'CREATE TABLE IF NOT EXISTS slow_log (start_time TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, user_host MEDIUMTEXT NOT NULL, query_time TIME(6) NOT NULL, lock_time TIME(6) NOT NULL, rows_sent BIGINT UNSIGNED NOT NULL, rows_examined BIGINT UNSIGNED NOT NULL, db VARCHAR(512) NOT NULL, last_insert_id INTEGER NOT NULL, insert_id INTEGER NOT NULL, server_id INTEGER UNSIGNED NOT NULL, sql_text MEDIUMTEXT NOT NULL, thread_id BIGINT(21) UNSIGNED NOT NULL, rows_affected BIGINT UNSIGNED NOT NULL) ENGINE=CSV DEFAULT CHARSET=utf8mb3 COMMENT="Slow log"',
+  'CREATE TABLE IF NOT EXISTS slow_log (start_time TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, user_host MEDIUMTEXT NOT NULL, query_time TIME(6) NOT NULL, lock_time TIME(6) NOT NULL, rows_sent BIGINT UNSIGNED NOT NULL, rows_examined BIGINT UNSIGNED NOT NULL, db VARCHAR(512) NOT NULL, last_insert_id INTEGER NOT NULL, insert_id INTEGER NOT NULL, server_id INTEGER UNSIGNED NOT NULL, sql_text MEDIUMTEXT NOT NULL, thread_id BIGINT(21) UNSIGNED NOT NULL, rows_affected BIGINT UNSIGNED NOT NULL) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COMMENT="Slow log"'
+);
+PREPARE stmt FROM @create_slow_log;
+EXECUTE stmt;
+DROP PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS proc (
   db char(64) collate utf8mb3_bin DEFAULT '' NOT NULL,

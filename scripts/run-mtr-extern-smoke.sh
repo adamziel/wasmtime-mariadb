@@ -30,7 +30,8 @@ init_sql="$root/scripts/mtr-extern-init.sql"
 mtr_bindir="${MTR_BINDIR:-}"
 mtr_client_bindir="${MTR_CLIENT_BINDIR:-/usr/bin}"
 mtr_toolroot="${MTR_TOOLROOT:-$root/build/mtr-toolroot}"
-restart_with_grants="${MTR_RESTART_WITH_GRANTS:-0}"
+restart_with_grants="${MTR_RESTART_WITH_GRANTS:-1}"
+grant_port_offset="${MTR_GRANT_PORT_OFFSET:-10000}"
 
 if [[ "$mtr_dir" != /* ]]; then
   mtr_dir="$root/$mtr_dir"
@@ -215,6 +216,28 @@ wait_ready() {
   return 1
 }
 
+port_is_listening() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :$port" | tail -n +2 | grep -q .
+  else
+    mariadb-admin --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 ping >/dev/null 2>&1
+  fi
+}
+
+wait_port_closed() {
+  local port="$1"
+
+  for _ in $(seq 1 100); do
+    if ! port_is_listening "$port"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 start_server() {
   local skip_grants="$1"
 
@@ -279,10 +302,19 @@ for idx in "${!tests[@]}"; do
 
     if [[ "$restart_with_grants" == "1" ]]; then
       cleanup_server
-      start_server 0
-      if ! wait_ready "$port" "$run_dir"; then
+      if [[ "$grant_port_offset" -ne 0 ]]; then
+        port=$((port + grant_port_offset))
+        socket_path="/tmp/wasmtime-mariadb-mtr-$port.sock"
+      elif ! wait_port_closed "$port"; then
         exit_code=124
-        printf 'server did not become ready after grant-table restart\n' > "$log_file"
+        printf 'server port did not close before grant-table restart\n' > "$log_file"
+      fi
+      if [[ "$exit_code" -eq 0 ]]; then
+        start_server 0
+        if ! wait_ready "$port" "$run_dir"; then
+          exit_code=124
+          printf 'server did not become ready after grant-table restart\n' > "$log_file"
+        fi
       fi
     fi
 
