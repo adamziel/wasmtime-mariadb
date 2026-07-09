@@ -41,9 +41,21 @@ jobs:
       - name: Smoke test server over TCP
         run: |
           set -euo pipefail
+          dump_logs() {
+            echo "::group::mariadbd-runtime.err"
+            cat "$RUN_DIR/mariadbd-runtime.err" 2>/dev/null || true
+            echo "::endgroup::"
+            echo "::group::server.stderr"
+            cat "$RUNNER_TEMP/server.stderr" 2>/dev/null || true
+            echo "::endgroup::"
+            echo "::group::server.stdout"
+            cat "$RUNNER_TEMP/server.stdout" 2>/dev/null || true
+            echo "::endgroup::"
+          }
           export BIN="$PWD/target/aarch64-apple-darwin/release/wasmtime-mariadb"
           export RUN_DIR="$RUNNER_TEMP/wasmtime-mariadb-run"
           export PORT=3320
+          export WASMTIME_MARIADB_SOCKET_TRACE=1
           ./scripts/run-server.sh >"$RUNNER_TEMP/server.stdout" 2>"$RUNNER_TEMP/server.stderr" &
           server_pid=$!
           cleanup() {
@@ -56,13 +68,16 @@ jobs:
               break
             fi
             if ! kill -0 "$server_pid" 2>/dev/null; then
-              cat "$RUN_DIR/mariadbd-runtime.err" 2>/dev/null || true
+              dump_logs
               exit 1
             fi
             sleep 1
           done
           grep -q 'ready for connections' "$RUN_DIR/mariadbd-runtime.err"
-          python3 scripts/bench-tcp.py --host 127.0.0.1 --port "$PORT" --user root --clients 1 --rows 5 --batch-size 5
+          python3 scripts/bench-tcp.py --host 127.0.0.1 --port "$PORT" --user root --clients 1 --rows 5 --batch-size 5 || {
+            dump_logs
+            exit 1
+          }
 
       - name: Package
         run: |
