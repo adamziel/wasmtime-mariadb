@@ -18,6 +18,39 @@ const WASI_ALT_SOCK_DGRAM: i32 = 5;
 const WASI_ALT_SOCK_STREAM: i32 = 6;
 const WASI_ALT_SOCK_CLOEXEC: i32 = 0x2000;
 const WASI_ALT_SOCK_NONBLOCK: i32 = 0x4000;
+const WASI_ERRNO_ACCES: i32 = 2;
+const WASI_ERRNO_ADDRINUSE: i32 = 3;
+const WASI_ERRNO_ADDRNOTAVAIL: i32 = 4;
+const WASI_ERRNO_AFNOSUPPORT: i32 = 5;
+const WASI_ERRNO_AGAIN: i32 = 6;
+const WASI_ERRNO_ALREADY: i32 = 7;
+const WASI_ERRNO_BADF: i32 = 8;
+const WASI_ERRNO_CONNABORTED: i32 = 13;
+const WASI_ERRNO_CONNREFUSED: i32 = 14;
+const WASI_ERRNO_CONNRESET: i32 = 15;
+const WASI_ERRNO_DESTADDRREQ: i32 = 17;
+const WASI_ERRNO_FAULT: i32 = 21;
+const WASI_ERRNO_INPROGRESS: i32 = 26;
+const WASI_ERRNO_INTR: i32 = 27;
+const WASI_ERRNO_INVAL: i32 = 28;
+const WASI_ERRNO_IO: i32 = 29;
+const WASI_ERRNO_ISCONN: i32 = 30;
+const WASI_ERRNO_MSGSIZE: i32 = 35;
+const WASI_ERRNO_NETDOWN: i32 = 38;
+const WASI_ERRNO_NETRESET: i32 = 39;
+const WASI_ERRNO_NETUNREACH: i32 = 40;
+const WASI_ERRNO_NOBUFS: i32 = 42;
+const WASI_ERRNO_NOPROTOOPT: i32 = 50;
+const WASI_ERRNO_NOSYS: i32 = 52;
+const WASI_ERRNO_NOTCONN: i32 = 53;
+const WASI_ERRNO_NOTSOCK: i32 = 57;
+const WASI_ERRNO_NOTSUP: i32 = 58;
+const WASI_ERRNO_OVERFLOW: i32 = 61;
+const WASI_ERRNO_PERM: i32 = 63;
+const WASI_ERRNO_PIPE: i32 = 64;
+const WASI_ERRNO_PROTONOSUPPORT: i32 = 66;
+const WASI_ERRNO_PROTOTYPE: i32 = 67;
+const WASI_ERRNO_TIMEDOUT: i32 = 73;
 
 #[derive(Clone)]
 pub(crate) struct HostSockets {
@@ -262,12 +295,13 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     )
                 };
                 if accepted < 0 {
-                    let errno = last_errno();
+                    let host_errno = last_errno();
+                    let guest_errno = errno_for_guest(host_errno);
                     socket_trace(format_args!(
-                        "accept guest_fd={fd} raw_fd={} -> -{errno}",
+                        "accept guest_fd={fd} raw_fd={} -> -{guest_errno} (host_errno={host_errno})",
                         socket.raw_fd
                     ));
-                    return neg_errno(errno);
+                    return neg_errno(host_errno);
                 }
                 denormalize_sockaddr_for_guest(&mut addr, socket.guest_domain);
                 if let Err(errno) = write_guest(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
@@ -721,11 +755,12 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                 }
                 let rc = unsafe { libc::poll(host_fds.as_mut_ptr(), host_fds.len() as _, timeout) };
                 if rc < 0 {
-                    let errno = last_errno();
+                    let host_errno = last_errno();
+                    let guest_errno = errno_for_guest(host_errno);
                     socket_trace(format_args!(
-                        "poll nfds={nfds} timeout={timeout} -> -{errno}"
+                        "poll nfds={nfds} timeout={timeout} -> -{guest_errno} (host_errno={host_errno})"
                     ));
-                    return neg_errno(errno);
+                    return neg_errno(host_errno);
                 }
                 socket_trace(format_args!("poll nfds={nfds} timeout={timeout} -> {rc}"));
                 for (index, pollfd) in host_fds.iter().enumerate() {
@@ -1049,11 +1084,133 @@ fn last_errno() -> i32 {
 }
 
 fn neg_errno(errno: i32) -> i32 {
-    -errno
+    -errno_for_guest(errno)
+}
+
+fn errno_for_guest(errno: i32) -> i32 {
+    if errno == libc::EACCES {
+        return WASI_ERRNO_ACCES;
+    }
+    if errno == libc::EADDRINUSE {
+        return WASI_ERRNO_ADDRINUSE;
+    }
+    if errno == libc::EADDRNOTAVAIL {
+        return WASI_ERRNO_ADDRNOTAVAIL;
+    }
+    if errno == libc::EAFNOSUPPORT {
+        return WASI_ERRNO_AFNOSUPPORT;
+    }
+    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+        return WASI_ERRNO_AGAIN;
+    }
+    if errno == libc::EALREADY {
+        return WASI_ERRNO_ALREADY;
+    }
+    if errno == libc::EBADF {
+        return WASI_ERRNO_BADF;
+    }
+    if errno == libc::ECONNABORTED {
+        return WASI_ERRNO_CONNABORTED;
+    }
+    if errno == libc::ECONNREFUSED {
+        return WASI_ERRNO_CONNREFUSED;
+    }
+    if errno == libc::ECONNRESET {
+        return WASI_ERRNO_CONNRESET;
+    }
+    if errno == libc::EDESTADDRREQ {
+        return WASI_ERRNO_DESTADDRREQ;
+    }
+    if errno == libc::EFAULT {
+        return WASI_ERRNO_FAULT;
+    }
+    if errno == libc::EINPROGRESS {
+        return WASI_ERRNO_INPROGRESS;
+    }
+    if errno == libc::EINTR {
+        return WASI_ERRNO_INTR;
+    }
+    if errno == libc::EINVAL {
+        return WASI_ERRNO_INVAL;
+    }
+    if errno == libc::EIO {
+        return WASI_ERRNO_IO;
+    }
+    if errno == libc::EISCONN {
+        return WASI_ERRNO_ISCONN;
+    }
+    if errno == libc::EMSGSIZE {
+        return WASI_ERRNO_MSGSIZE;
+    }
+    if errno == libc::ENETDOWN {
+        return WASI_ERRNO_NETDOWN;
+    }
+    if errno == libc::ENETRESET {
+        return WASI_ERRNO_NETRESET;
+    }
+    if errno == libc::ENETUNREACH {
+        return WASI_ERRNO_NETUNREACH;
+    }
+    if errno == libc::ENOBUFS {
+        return WASI_ERRNO_NOBUFS;
+    }
+    if errno == libc::ENOPROTOOPT {
+        return WASI_ERRNO_NOPROTOOPT;
+    }
+    if errno == libc::ENOSYS {
+        return WASI_ERRNO_NOSYS;
+    }
+    if errno == libc::ENOTCONN {
+        return WASI_ERRNO_NOTCONN;
+    }
+    if errno == libc::ENOTSOCK {
+        return WASI_ERRNO_NOTSOCK;
+    }
+    if errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP {
+        return WASI_ERRNO_NOTSUP;
+    }
+    if errno == libc::EOVERFLOW {
+        return WASI_ERRNO_OVERFLOW;
+    }
+    if errno == libc::EPERM {
+        return WASI_ERRNO_PERM;
+    }
+    if errno == libc::EPIPE {
+        return WASI_ERRNO_PIPE;
+    }
+    if errno == libc::EPROTONOSUPPORT {
+        return WASI_ERRNO_PROTONOSUPPORT;
+    }
+    if errno == libc::EPROTOTYPE {
+        return WASI_ERRNO_PROTOTYPE;
+    }
+    if errno == libc::ETIMEDOUT {
+        return WASI_ERRNO_TIMEDOUT;
+    }
+    errno
 }
 
 fn socket_trace(args: std::fmt::Arguments<'_>) {
     if std::env::var_os("WASMTIME_MARIADB_SOCKET_TRACE").is_some() {
         eprintln!("[wasmtime-mariadb:sockets] {args}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_nonblocking_socket_errors_to_wasi_errno() {
+        assert_eq!(errno_for_guest(libc::EAGAIN), WASI_ERRNO_AGAIN);
+        assert_eq!(errno_for_guest(libc::EWOULDBLOCK), WASI_ERRNO_AGAIN);
+    }
+
+    #[test]
+    fn maps_common_socket_errors_to_wasi_errno() {
+        assert_eq!(errno_for_guest(libc::EBADF), WASI_ERRNO_BADF);
+        assert_eq!(errno_for_guest(libc::ECONNRESET), WASI_ERRNO_CONNRESET);
+        assert_eq!(errno_for_guest(libc::ENOTCONN), WASI_ERRNO_NOTCONN);
+        assert_eq!(errno_for_guest(libc::EOPNOTSUPP), WASI_ERRNO_NOTSUP);
     }
 }

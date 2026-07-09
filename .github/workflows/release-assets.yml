@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag, for example v0.1.1
+        description: Release tag, for example v0.1.2
         required: true
         type: string
 
@@ -37,6 +37,10 @@ jobs:
           rustup target add aarch64-apple-darwin
           MARIADBD_WASM="$PWD/release-input/mariadbd" \
             cargo build --release --target aarch64-apple-darwin
+
+      - name: Install mysql client
+        run: |
+          brew list mysql-client >/dev/null 2>&1 || brew install mysql-client
 
       - name: Smoke test server over TCP
         run: |
@@ -75,6 +79,10 @@ jobs:
           done
           grep -q 'ready for connections' "$RUN_DIR/mariadbd-runtime.err"
           python3 scripts/bench-tcp.py --host 127.0.0.1 --port "$PORT" --user root --clients 1 --rows 5 --batch-size 5 || {
+            dump_logs
+            exit 1
+          }
+          MYSQL="$(brew --prefix mysql-client)/bin/mysql" PORT="$PORT" ./scripts/test-mysql-client.sh || {
             dump_logs
             exit 1
           }
