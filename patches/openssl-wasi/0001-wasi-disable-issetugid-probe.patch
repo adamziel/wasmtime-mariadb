@@ -1,0 +1,17 @@
+diff --git a/crypto/uid.c b/crypto/uid.c
+index 0bd01d471f..af6d183412 100644
+--- a/crypto/uid.c
++++ b/crypto/uid.c
+@@ -47,6 +47,12 @@ int OPENSSL_issetugid(void)
+ {
+ #ifdef OSSL_IMPLEMENT_GETAUXVAL
+     return getauxval(AT_SECURE) != 0;
++#elif defined(__wasi__)
++    /*
++     * WASI does not expose Unix uid/gid process credentials, and there is no
++     * setuid/setgid execution state for OpenSSL to detect.
++     */
++    return 0;
+ #else
+     return getuid() != geteuid() || getgid() != getegid();
+ #endif
