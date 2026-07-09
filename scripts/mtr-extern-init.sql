@@ -1,15 +1,66 @@
 -- Minimal schema bootstrap for scripts/run-mtr-extern-smoke.sh.
 --
--- The upstream MTR warning bootstrap creates MyISAM tables and expects a fully
--- initialized mysql system schema. The WASI port currently cannot use those
--- Aria/MyISAM paths reliably, so this file creates only the pieces needed for
--- external smoke tests to reach the server behavior under test.
+-- The upstream MTR warning bootstrap expects a fully initialized mysql system
+-- schema. This file creates only the pieces needed for external smoke tests to
+-- reach the server behavior under test.
 
 CREATE DATABASE IF NOT EXISTS mysql;
 CREATE DATABASE IF NOT EXISTS test;
 CREATE DATABASE IF NOT EXISTS mtr;
 
 USE mysql;
+
+CREATE TABLE IF NOT EXISTS global_priv (
+  Host char(255) binary DEFAULT '',
+  User char(128) binary DEFAULT '',
+  Priv JSON NOT NULL DEFAULT '{}' CHECK(JSON_VALID(Priv)),
+  PRIMARY KEY (Host,User)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Users and global privileges';
+
+INSERT IGNORE INTO global_priv (Host, User, Priv) VALUES
+  ('localhost', 'root', '{"access":18446744073709551615,"plugin":"mysql_native_password","authentication_string":"","auth_or":[{},{"plugin":"unix_socket"}]}'),
+  ('127.0.0.1', 'root', '{"access":18446744073709551615,"plugin":"mysql_native_password","authentication_string":""}'),
+  ('::1', 'root', '{"access":18446744073709551615,"plugin":"mysql_native_password","authentication_string":""}'),
+  ('', 'PUBLIC', '{"access":0,"is_role":true}');
+
+CREATE TABLE IF NOT EXISTS servers (
+  Server_name char(64) NOT NULL DEFAULT '',
+  Host varchar(2048) NOT NULL DEFAULT '',
+  Db char(64) NOT NULL DEFAULT '',
+  Username char(128) NOT NULL DEFAULT '',
+  Password char(64) NOT NULL DEFAULT '',
+  Port int(4) NOT NULL DEFAULT '0',
+  Socket char(108) NOT NULL DEFAULT '',
+  Wrapper char(64) NOT NULL DEFAULT '',
+  Owner varchar(512) NOT NULL DEFAULT '',
+  PRIMARY KEY (Server_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='MySQL Foreign Servers table';
+
+CREATE TABLE IF NOT EXISTS event (
+  db char(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_bin NOT NULL DEFAULT '',
+  name char(64) CHARACTER SET utf8mb3 NOT NULL DEFAULT '',
+  body longblob NOT NULL,
+  definer varchar(384) CHARACTER SET utf8mb3 COLLATE utf8mb3_bin NOT NULL DEFAULT '',
+  execute_at datetime DEFAULT NULL,
+  interval_value int(11) DEFAULT NULL,
+  interval_field enum('YEAR','QUARTER','MONTH','DAY','HOUR','MINUTE','WEEK','SECOND','MICROSECOND','YEAR_MONTH','DAY_HOUR','DAY_MINUTE','DAY_SECOND','HOUR_MINUTE','HOUR_SECOND','MINUTE_SECOND','DAY_MICROSECOND','HOUR_MICROSECOND','MINUTE_MICROSECOND','SECOND_MICROSECOND') DEFAULT NULL,
+  created timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  modified timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
+  last_executed datetime DEFAULT NULL,
+  starts datetime DEFAULT NULL,
+  ends datetime DEFAULT NULL,
+  status enum('ENABLED','DISABLED','SLAVESIDE_DISABLED') NOT NULL DEFAULT 'ENABLED',
+  on_completion enum('DROP','PRESERVE') NOT NULL DEFAULT 'DROP',
+  sql_mode set('REAL_AS_FLOAT','PIPES_AS_CONCAT','ANSI_QUOTES','IGNORE_SPACE','IGNORE_BAD_TABLE_OPTIONS','ONLY_FULL_GROUP_BY','NO_UNSIGNED_SUBTRACTION','NO_DIR_IN_CREATE','POSTGRESQL','ORACLE','MSSQL','DB2','MAXDB','NO_KEY_OPTIONS','NO_TABLE_OPTIONS','NO_FIELD_OPTIONS','MYSQL323','MYSQL40','ANSI','NO_AUTO_VALUE_ON_ZERO','NO_BACKSLASH_ESCAPES','STRICT_TRANS_TABLES','STRICT_ALL_TABLES','NO_ZERO_IN_DATE','NO_ZERO_DATE','INVALID_DATES','ERROR_FOR_DIVISION_BY_ZERO','TRADITIONAL','NO_AUTO_CREATE_USER','HIGH_NOT_PRECEDENCE','NO_ENGINE_SUBSTITUTION','PAD_CHAR_TO_FULL_LENGTH','EMPTY_STRING_IS_NULL','SIMULTANEOUS_ASSIGNMENT','TIME_ROUND_FRACTIONAL') DEFAULT '' NOT NULL,
+  comment char(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_bin NOT NULL DEFAULT '',
+  originator int unsigned NOT NULL,
+  time_zone char(64) CHARACTER SET latin1 NOT NULL DEFAULT 'SYSTEM',
+  character_set_client char(32) COLLATE utf8mb3_bin,
+  collation_connection char(64) COLLATE utf8mb3_bin,
+  db_collation char(64) COLLATE utf8mb3_bin,
+  body_utf8 longblob,
+  PRIMARY KEY (db,name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Events';
 
 CREATE TABLE IF NOT EXISTS proc (
   db char(64) collate utf8mb3_bin DEFAULT '' NOT NULL,
@@ -34,7 +85,7 @@ CREATE TABLE IF NOT EXISTS proc (
   body_utf8 longblob,
   aggregate enum('NONE','GROUP') DEFAULT 'NONE' NOT NULL,
   PRIMARY KEY (db,name,type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='Stored Procedures';
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COMMENT='Stored Procedures';
 
 CREATE TABLE IF NOT EXISTS func (
   name char(64) binary DEFAULT '' NOT NULL,

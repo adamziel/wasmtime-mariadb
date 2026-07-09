@@ -12,6 +12,10 @@ fi
 run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
 read -r -a extra_runner_args <<< "${RUNNER_ARGS:-}"
+grant_args=()
+if [[ "${SKIP_GRANT_TABLES:-1}" != "0" ]]; then
+  grant_args+=(--skip-grant-tables)
+fi
 
 if [[ ! -x "$bin" ]]; then
   echo "runner binary not found: $bin" >&2
@@ -35,7 +39,7 @@ exec "$bin" \
   -- \
   --no-defaults \
   --console \
-  --skip-grant-tables \
+  "${grant_args[@]}" \
   --skip-external-locking \
   --debug-no-sync \
   --skip-ssl \

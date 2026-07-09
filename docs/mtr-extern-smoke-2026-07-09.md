@@ -28,17 +28,18 @@ Command:
 ```
 
 The harness starts a fresh Wasmtime server/datadir per test, waits for TCP
-readiness, starts a small Unix-socket-to-TCP proxy for `mysqltest`
-`localhost` connections, loads `scripts/mtr-extern-init.sql`, then runs:
+readiness, loads `scripts/mtr-extern-init.sql`, starts a small
+Unix-socket-to-TCP proxy for `mysqltest` `localhost` connections, then runs:
 
 ```sh
-perl /usr/share/mariadb-test/mariadb-test-run.pl \
+perl "$MTR_DIR/mariadb-test-run.pl" \
   --extern host=127.0.0.1 \
   --extern port="$port" \
   --extern socket="$socket_path" \
   --extern user=root \
   --extern ssl=0 \
-  --client-bindir=/usr/bin \
+  --client-bindir="$MTR_TOOLROOT/bin" \
+  --vardir="$vardir" \
   --force \
   --timer \
   "$test_name"
@@ -47,93 +48,121 @@ perl /usr/share/mariadb-test/mariadb-test-run.pl \
 Versions:
 
 - Server under test: `11.4.12-MariaDB` inside `wasmtime-mariadb 0.1.3`
-- MTR package: Fedora `mariadb-test-11.8.8`
-- Note: the ideal next step is to build/use the pinned 11.4 `mariadb-test`
-  binary and runner. The source tree has 11.4 tests, but its runner needed a
-  built `my_safe_process`; this first pass used Fedora's packaged test tools.
+- MTR runner/test tree: pinned MariaDB 11.4 source checkout at
+  `build/mariadb-wasi-port/src/mysql-test`
+- Client/test helper binaries: Fedora `mariadb-test-11.8.8` tools, exposed
+  through a generated `build/mtr-toolroot/bin`
 
-The server runner also preopens the smoke output directory at the same guest
-path, and preopens the MTR `std_data` directory as guest `/std_data`.
+For source-tree MTR runs, `scripts/run-mtr-extern-smoke.sh` now builds
+`my_safe_process` into `build/mtr-toolroot/mysql-test/lib/My/SafeProcess/`,
+symlinks required client/helper tools into `build/mtr-toolroot/bin`, and sets
+`MTR_BINDIR` for the runner.
+
+The server datadir is mapped under the test vardir as
+`<test>/var/mysqld.1/data`, matching MTR's normal path shape. This lets
+`mysqltest` file-safety checks accept server paths and lets relative
+`../../std_data/...` loads resolve to the vardir copy of `std_data`. The MTR
+server profile also overrides the quick-start InnoDB default with MTR-like
+defaults such as `--default-storage-engine=MyISAM`,
+`--use-stat-tables=preferably`, and `--histogram-type=json_hb`.
 
 Raw logs from the latest run:
 
-- `build/mtr-extern-smoke-current2/summary.tsv`
-- `build/mtr-extern-smoke-current2/<test_name>/mtr.log`
-- `build/mtr-extern-smoke-current2/<test_name>/init.stdout`
-- `build/mtr-extern-smoke-current2/<test_name>/init.stderr`
-- `build/mtr-extern-smoke-current2/<test_name>/server/mariadbd-runtime.err`
+- `build/mtr-extern-smoke-current3/summary.tsv`
+- `build/mtr-extern-smoke-current3/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current3/<test_name>/init.stdout`
+- `build/mtr-extern-smoke-current3/<test_name>/init.stderr`
+- `build/mtr-extern-smoke-current3/<test_name>/var/mysqld.1/mariadbd-runtime.err`
 
 The init SQL is intentionally minimal. It creates `mysql.proc`,
-`mysql.procs_priv`, `mysql.func`, time-zone tables, statistics tables,
-`mysql.gtid_slave_pos`, and `mtr.add_suppression()` using InnoDB so tests can
-get past MTR's own warning-suppression and system-table setup without requiring
-a full datadir initialization.
+`mysql.global_priv`, `mysql.servers`, `mysql.event`, `mysql.procs_priv`,
+`mysql.func`, time-zone tables, statistics tables, `mysql.gtid_slave_pos`, and
+`mtr.add_suppression()` without requiring a full datadir initialization.
+`mysql.proc` is Aria because `main.drop` has a file-level regression test that
+expects `proc.MAD` and `proc.MAI`.
 
 ## Summary
 
 22 tests were run:
 
-- Passed: 3
-- Failed: 19
+- Passed: 11
+- Failed: 11
 
 Passed:
 
+- `main.insert`
+- `main.update`
+- `main.delete`
+- `main.type_int`
+- `main.func_math`
+- `main.subselect`
 - `main.ps`
 - `main.prepare`
 - `main.information_schema`
+- `innodb.create_select`
+- `innodb.alter_table`
 
 ## Failures
 
 | Test | First failure |
 | --- | --- |
-| `main.select` | Insert of `18446744073709551615` into an integer column failed with `ER_WARN_DATA_OUT_OF_RANGE (1264)`. |
-| `main.insert` | `CREATE TABLE t1 (sid CHAR(20), id INT(2) NOT NULL AUTO_INCREMENT, KEY(sid, id))` failed with `ER_WRONG_AUTO_KEY (1075)`, consistent with the smoke server running InnoDB as the default engine. |
-| `main.update` | Result diff against Fedora's `main/update.result`. The test now runs past the previous socket and internal-temp-table blockers. |
-| `main.delete` | `DELETE FROM t1 AS a1 WHERE a1.c1 = 2` failed with `ER_PARSE_ERROR (1064)`. This is an 11.8 packaged-test expectation against an 11.4 server. |
-| `main.create` | `INSERT INTO t1 VALUES (""),(NULL)` on `CHAR(0) NOT NULL` failed with `ER_BAD_NULL_ERROR (1048)`. |
-| `main.drop` | `mysqltest` rejected `/tmp/data//mysql_test/#sql-347f_6.frm` because it is outside `MYSQLTEST_VARDIR` and `MYSQL_TMP_DIR`. |
-| `main.type_int` | Result diff against Fedora's `main/type_int.result`, mostly default engine/charset/collation output differences. |
-| `main.type_varchar` | `mysqltest` rejected `/tmp/data//upgrade1/vchar.frm` because it is outside `MYSQLTEST_VARDIR` and `MYSQL_TMP_DIR`. |
-| `main.func_math` | Result diff against Fedora's `main/func_math.result`; the earlier missing `std_data` file is fixed. |
-| `main.func_str` | Result diff against Fedora's `main/func_str.result`; the earlier Unix-socket and outfile-preopen failures are fixed. |
-| `main.join` | Result diff against Fedora's `main/join.result`. |
-| `main.union` | InnoDB rejected a foreign key definition with `errno: 150 "Foreign key constraint is incorrectly formed"`. |
-| `main.order_by` | Result diff against Fedora's `main/order_by.result`, including `ERROR 21000: Subquery returns more than 1 row`. |
-| `main.group_by` | Result diff against Fedora's `main/group_by.result`; server logs also show an `Out of sort memory` error in this area. |
-| `main.subselect` | `mysqltest` `remove_file` command failed with `my_errno: 2`, `errno: 2`. |
+| `main.select` | Result diff: `SHOW CREATE VIEW` reports an empty definer instead of `root@localhost`, consistent with running under `--skip-grant-tables`. |
+| `main.create` | `CREATE USER mysqltest_1` failed because the server is still running with `--skip-grant-tables`. |
+| `main.drop` | Result diff: `SHOW DATABASES` output is reduced under the minimal grant setup, and host errno is `55` rather than expected `39` for a non-empty directory. |
+| `main.type_varchar` | Result diff in string-valued predicates, including `CONCAT()` / `LEFT()` / `COALESCE()` used as conditions. |
+| `main.func_str` | Result diff: several `random_bytes()` calls with coerced string/numeric lengths return `NULL` where the expected file has byte lengths, plus one binary conversion predicate differs. |
+| `main.join` | Result diff around `information_schema` metadata for `mysql.global_priv`; the minimal bootstrap does not match the full test datadir metadata. |
+| `main.union` | `SET GLOBAL slow_query_log=ON` failed because `mysql.slow_log` is not present in the minimal system schema. |
+| `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent. |
+| `main.group_by` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable for one subcase, while this build has InnoDB enabled. |
 | `innodb.innodb` | `CREATE TABLE ... ROW_FORMAT=FIXED` failed with `ER_CANT_CREATE_TABLE (errno: 140 "Wrong create options")`. |
-| `innodb.create_select` | Result diff: packaged 11.8 result expects `Truncated incorrect BOOLEAN value`, while 11.4 reports `Truncated incorrect DOUBLE value`. |
-| `innodb.foreign_key` | MTR restart include failed to open `/tmp/data/(none).pid`; external-mode restart assumptions do not match this harness. |
-| `innodb.alter_table` | Result diff against Fedora's `suite/innodb/r/alter_table.result`. |
+| `innodb.foreign_key` | MTR restart include waited for the external server to disappear and timed out. External-mode restart assumptions still do not match this harness. |
 
 ## Failure buckets
 
 The failures now cluster into a few concrete areas:
 
-1. Packaged-test/server-version mismatch. This run uses Fedora's 11.8.8 MTR
-   package against an 11.4.12 server, so some syntax and expected-result files
-   do not match the server under test.
-2. Default engine and charset/collation differences. The smoke server defaults
-   to InnoDB/latin1, while many packaged `main` results expect MyISAM and newer
-   default charset/collation output.
-3. MTR external-mode filesystem assumptions. Some `mysqltest` commands reject
-   `/tmp/data/...` paths because they are outside the allowed vardir/tmpdir
-   sandbox, even though the server can access them.
-4. MTR restart/PID assumptions. `innodb.foreign_key` tries to use restart
-   includes that expect a normal MTR-managed mysqld pid file.
-5. Remaining real runtime differences, including sort-memory pressure and
-   some SQL behavior differences in expression typing, foreign key validation,
-   and row format handling.
+1. Incomplete grant/system-table bootstrap. `--skip-grant-tables` still causes
+   empty definers and blocks `CREATE USER`; missing log/privilege tables still
+   affect `main.union` and some metadata expectations.
+2. Expected-result variants for the exact server build. Some pinned results
+   assume InnoDB is unavailable in `main` subcases, while this build has InnoDB.
+3. MTR restart assumptions. `innodb.foreign_key` tries to use restart includes
+   that expect MTR to own the server lifecycle.
+4. Remaining behavior differences, including string/numeric coercion in
+   predicates, `random_bytes()` coercion behavior, `ANALYZE FORMAT=JSON` fields,
+   and `ROW_FORMAT=FIXED` handling in InnoDB.
 
 ## Fixed in this pass
 
 The latest run no longer contains these earlier blockers:
 
+- Fedora 11.8 expected-result mismatch for the smoke set; the harness now uses
+  the pinned MariaDB 11.4 MTR tree by default when present.
+- MTR source-tree runner failure due to missing `my_safe_process`.
+- Default-engine drift for the `main` suite; MTR runs now override the
+  quick-start InnoDB default with MyISAM.
+- `mysqltest` path-safety failures for server files under `/tmp/data/...`; the
+  datadir now lives under the MTR vardir.
+- Missing `mysql.event` causing `DROP DATABASE` warning diffs.
+- Missing `mysql/proc.MAD` / `mysql/proc.MAI` for the `main.drop` file-level
+  regression case.
 - `Incorrect file format` for MyISAM tables or internal temporary tables.
 - Unix socket connection failures for `connect ...,localhost,...`.
 - `chmod()` / `fchmod()` returning WASI `ENOSYS` during trigger metadata writes.
 - Server-side `Capabilities insufficient` for MTR vardir outfile writes.
-- Missing `/std_data/...` for packaged `LOAD DATA INFILE` tests.
+- Missing or inaccessible `std_data` for `LOAD DATA INFILE` tests.
+
+Tests that flipped from failing to passing since `build/mtr-extern-smoke-current2`:
+
+- `main.insert`
+- `main.update`
+- `main.delete`
+- `main.type_int`
+- `main.func_math`
+- `main.subselect`
+- `innodb.create_select`
+- `innodb.alter_table`
 
 Direct repros that now pass:
 
@@ -143,13 +172,16 @@ Direct repros that now pass:
 
 ## Next likely fixes
 
-1. Build and use pinned MariaDB 11.4 `mariadb-test`/`mysqltest` tooling for
-   version-matched expected results.
-2. Add a better external-mode mapping for `/tmp/data/...` paths that
-   `mysqltest` path-safety checks currently reject.
-3. Teach the harness how to skip or emulate MTR restart includes for an
-   externally managed Wasmtime server.
-4. Revisit server defaults for MTR runs, especially default storage engine and
-   charset/collation, without changing the user-facing InnoDB quick start.
-5. Increase or tune sort buffers for query-heavy tests and investigate the
-   remaining SQL behavior diffs.
+1. Replace the minimal grant bootstrap with enough of `mariadb-install-db` to
+   run the smoke server without `--skip-grant-tables`. An opt-in
+   `MTR_RESTART_WITH_GRANTS=1` path exists, but currently fails at startup
+   because `mysql.db` and related privilege tables are missing.
+2. Add minimal `mysql.slow_log` / `mysql.general_log` tables for tests that
+   enable `log_output=TABLE`.
+3. Teach the harness how to skip, emulate, or explicitly mark MTR restart
+   includes for an externally managed Wasmtime server.
+4. Decide whether to use alternate expected-result files or targeted skips for
+   subcases whose expected output assumes InnoDB is unavailable.
+5. Investigate the remaining SQL behavior diffs in string predicates,
+   `random_bytes()` argument coercion, `ANALYZE FORMAT=JSON`, and InnoDB
+   `ROW_FORMAT=FIXED`.
