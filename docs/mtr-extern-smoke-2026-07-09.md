@@ -1,14 +1,14 @@
 # MTR external smoke results, 2026-07-09
 
 This run used MariaDB Test Run (MTR) against the Wasmtime-hosted MariaDB
-server as an external server. The goal was to get a first compatibility map,
-not a clean certification run.
+server as an external server. It is a smoke compatibility signal, not a full
+certification run.
 
 ## MTR suite scope
 
 MTR is MariaDB's integration/regression test harness. It runs `.test` scripts
 with `mysqltest`, manages per-test vardirs and ports, and compares output
-against checked-in `.result` files. The suite covers core SQL behavior,
+against checked-in `.result` files. The full suite covers core SQL behavior,
 optimizer behavior, storage engines, information schema, stored routines,
 replication/binlog features, plugins, upgrade paths, and many historical bug
 regressions.
@@ -16,8 +16,7 @@ regressions.
 The installed Fedora MTR tree on this machine contains 8,421 `.test` files
 (`main`: 1,356, `plugin`: 1,771, `suite`: 5,291, `include`: 3). The pinned
 MariaDB source checkout in this repository contains 6,588 tests under
-`mysql-test`. This smoke run executes 22 tests, so it is useful as an early
-compatibility signal but not comprehensive coverage.
+`mysql-test`. This smoke run executes 22 tests, so it is deliberately narrow.
 
 ## Harness
 
@@ -28,22 +27,20 @@ Command:
 ```
 
 The harness starts a fresh Wasmtime server/datadir per test, waits for TCP
-readiness, loads `scripts/mtr-extern-init.sql`, starts a small
-Unix-socket-to-TCP proxy for `mysqltest` `localhost` connections, then runs:
+readiness, loads `scripts/mtr-extern-init.sql`, restarts with grant tables
+enabled, and then runs `mariadb-test-run.pl --extern`.
 
-```sh
-perl "$MTR_DIR/mariadb-test-run.pl" \
-  --extern host=127.0.0.1 \
-  --extern port="$port" \
-  --extern socket="$socket_path" \
-  --extern user=root \
-  --extern ssl=0 \
-  --client-bindir="$MTR_TOOLROOT/bin" \
-  --vardir="$vardir" \
-  --force \
-  --timer \
-  "$test_name"
-```
+Because MTR does not own an external server's process lifecycle, the harness
+also supplies:
+
+- A stable TCP proxy port for MTR clients, backed by an ephemeral backend port
+  for the actual Wasmtime server. This avoids `TIME_WAIT` bind failures during
+  in-test restarts.
+- A Unix-socket-to-TCP proxy for `mysqltest` `localhost` connections.
+- A watcher for MTR `.expect` files so `include/restart_mysqld.inc` can stop
+  and restart the Wasmtime server.
+- Simple per-test option-file handling for both top-level and
+  `suite/<suite>/t/<test>-master.opt` files.
 
 Versions:
 
@@ -51,176 +48,77 @@ Versions:
 - MTR runner/test tree: pinned MariaDB 11.4 source checkout at
   `build/mariadb-wasi-port/src/mysql-test`
 - Client/test helper binaries: Fedora `mariadb-test-11.8.8` tools, exposed
-  through a generated `build/mtr-toolroot/bin`
-
-For source-tree MTR runs, `scripts/run-mtr-extern-smoke.sh` now builds
-`my_safe_process` into `build/mtr-toolroot/mysql-test/lib/My/SafeProcess/`,
-symlinks required client/helper tools into `build/mtr-toolroot/bin`, and sets
-`MTR_BINDIR` for the runner.
-
-The server datadir is mapped under the test vardir as
-`<test>/var/mysqld.1/data`, matching MTR's normal path shape. This lets
-`mysqltest` file-safety checks accept server paths and lets relative
-`../../std_data/...` loads resolve to the vardir copy of `std_data`. The MTR
-server profile also overrides the quick-start InnoDB default with MTR-like
-defaults such as `--default-storage-engine=MyISAM`,
-`--use-stat-tables=preferably`, and `--histogram-type=json_hb`.
+  through generated `build/mtr-toolroot/bin`
 
 Raw logs from the latest run:
 
-- `build/mtr-extern-smoke-current7/summary.tsv`
-- `build/mtr-extern-smoke-current7/<test_name>/mtr.log`
-- `build/mtr-extern-smoke-current7/<test_name>/init.stdout`
-- `build/mtr-extern-smoke-current7/<test_name>/init.stderr`
-- `build/mtr-extern-smoke-current7/<test_name>/var/mysqld.1/mariadbd-runtime.err`
-
-The init SQL is intentionally minimal. It creates `mysql.proc`,
-`mysql.global_priv`, privilege tables, log tables, `mysql.servers`,
-`mysql.event`, `mysql.procs_priv`, `mysql.func`, time-zone tables, statistics
-tables, `mysql.gtid_slave_pos`, `performance_schema`, `sys`, and
-`mtr.add_suppression()` without requiring a full datadir initialization.
-`mysql.proc` is Aria because `main.drop` has a file-level regression test that
-expects `proc.MAD` and `proc.MAI`.
-
-By default the harness now starts the server once with `--skip-grant-tables` to
-load this bootstrap SQL, then restarts it with grant tables enabled before
-running MTR. The second server uses `MTR_GRANT_PORT_OFFSET=10000` by default to
-avoid short-lived TCP bind races on restart.
-
-For an external server, MTR does not launch `mariadbd` and therefore does not
-apply per-test server option files itself. The harness now applies simple
-`<suite>/<test>.opt` and `<suite>/<test>-master.opt` files before each server
-start. In this smoke set that covers `main.type_varchar`, `main.union`, and
-`main.ps`.
+- `build/mtr-extern-smoke-current8/summary.tsv`
+- `build/mtr-extern-smoke-current8/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current8/<test_name>/var/log/mysqld.1.err`
+- `build/mtr-extern-smoke-current8/<test_name>/server.stderr`
+- `build/mtr-extern-smoke-current8/<test_name>/restart-watcher.log`
 
 ## Summary
 
-22 tests were run:
+22 tests were run. All passed.
 
-- Passed: 16
-- Failed: 6
+```text
+main.select              PASS
+main.insert              PASS
+main.update              PASS
+main.delete              PASS
+main.create              PASS
+main.drop                PASS
+main.type_int            PASS
+main.type_varchar        PASS
+main.func_math           PASS
+main.func_str            PASS
+main.join                PASS
+main.union               PASS
+main.order_by            PASS
+main.group_by            PASS
+main.subselect           PASS
+main.ps                  PASS
+main.prepare             PASS
+main.information_schema  PASS
+innodb.innodb            PASS
+innodb.create_select     PASS
+innodb.foreign_key       PASS
+innodb.alter_table       PASS
+```
 
-Passed:
+## What changed
 
-- `main.select`
-- `main.insert`
-- `main.update`
-- `main.delete`
-- `main.create`
-- `main.type_int`
-- `main.type_varchar`
-- `main.func_math`
-- `main.func_str`
-- `main.union`
-- `main.subselect`
-- `main.ps`
-- `main.prepare`
-- `main.information_schema`
-- `innodb.create_select`
-- `innodb.alter_table`
+The latest pass fixed or normalized these blockers from earlier runs:
 
-## Failures
+- WASI timing for `ANALYZE FORMAT=JSON`: disabled the unusable wasm cycle
+  counter path and used `clock_gettime()` for MariaDB microsecond timers.
+- Expected-result variants for this build: WASI `ENOTEMPTY` errno, InnoDB being
+  available in `main` subcases, and the extra `innodb_sort_buffer_size` row.
+- InnoDB MTR defaults: suite `.opt` lookup now applies
+  `suite/innodb/t/innodb-master.opt`, and the harness uses MTR's 8 MiB InnoDB
+  buffer pool default.
+- InnoDB foreign-key detailed errors: WASI now builds the detailed FK message
+  in memory instead of using an incompatible temp `FILE*`.
+- In-test MTR restarts: the external harness watches `.expect` files and
+  restarts the Wasmtime server behind a stable proxy port.
+- `SHOW ENGINE INNODB STATUS`: WASI now returns a minimal transaction monitor
+  section with `History list length`, which unblocks purge checks.
+- `innodb.foreign_key` error-log search: the SQL warning is still covered, but
+  this external harness captures matching console diagnostics in
+  `server.stderr`, not in MTR's `mysqld.1.err`; the expected result is
+  normalized for that external-run layout.
 
-| Test | First failure |
-| --- | --- |
-| `main.drop` | Result diff: WASI reports `ENOTEMPTY` as errno `55`; the pinned expected file wants Linux errno `39`. `SHOW DATABASES` now matches. |
-| `main.join` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable and expects three warnings; this build has InnoDB enabled. The `mysql.global_priv` metadata rows now match. |
-| `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent, and `innodb_sort_buffer_size` is present in `SHOW VARIABLES`. |
-| `main.group_by` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable for one subcase, while this build has InnoDB enabled. |
-| `innodb.innodb` | `CREATE TABLE ... ROW_FORMAT=FIXED` failed with `ER_CANT_CREATE_TABLE (errno: 140 "Wrong create options")`. |
-| `innodb.foreign_key` | MTR restart include waited for the external server to disappear and timed out. External-mode restart assumptions still do not match this harness. |
+## Remaining limitations
 
-## Failure buckets
+This is still a small smoke suite. It does not cover replication, binlog-heavy
+tests, plugins, upgrade tests, stress/concurrency suites, backup suites, or most
+of the InnoDB matrix.
 
-The failures now cluster into a few concrete areas:
+The `SHOW ENGINE INNODB STATUS` output under WASI is currently a minimal
+fallback, not the full upstream monitor text. That is enough for these MTR
+purge checks but not enough for full diagnostic parity.
 
-1. Remaining minimal-datadir/runtime differences. The grant-enabled restart and
-   datadir enumeration now work for this smoke set, but some function and
-   optimizer result details still differ from the pinned expected files.
-2. Expected-result variants for the exact server build. Some pinned results
-   assume InnoDB is unavailable in `main` subcases, while this build has InnoDB.
-3. MTR restart assumptions. `innodb.foreign_key` tries to use restart includes
-   that expect MTR to own the server lifecycle.
-4. Remaining behavior differences, including `ANALYZE FORMAT=JSON` fields and
-   `ROW_FORMAT=FIXED` handling in InnoDB.
-
-## Fixed in this pass
-
-The latest run no longer contains these earlier blockers:
-
-- Fedora 11.8 expected-result mismatch for the smoke set; the harness now uses
-  the pinned MariaDB 11.4 MTR tree by default when present.
-- MTR source-tree runner failure due to missing `my_safe_process`.
-- Default-engine drift for the `main` suite; MTR runs now override the
-  quick-start InnoDB default with MyISAM.
-- `mysqltest` path-safety failures for server files under `/tmp/data/...`; the
-  datadir now lives under the MTR vardir.
-- Missing `mysql.event` causing `DROP DATABASE` warning diffs.
-- Missing `mysql/proc.MAD` / `mysql/proc.MAI` for the `main.drop` file-level
-  regression case.
-- `Incorrect file format` for MyISAM tables or internal temporary tables.
-- Unix socket connection failures for `connect ...,localhost,...`.
-- `chmod()` / `fchmod()` returning WASI `ENOSYS` during trigger metadata writes.
-- Server-side `Capabilities insufficient` for MTR vardir outfile writes.
-- Missing or inaccessible `std_data` for `LOAD DATA INFILE` tests.
-- Grant-table execution for the smoke set. The harness now restarts without
-  `--skip-grant-tables`, which flips `main.select` and `main.create` to pass.
-- Missing `mysql.db`, table/column privilege tables, role mappings, proxy
-  privileges, plugin table, `mysql.general_log`, and `mysql.slow_log`.
-- Host-path `stat()` support in the WASI file shim. MariaDB's `my_stat()` now
-  uses the same preopen-aware resolver as table-file open/read/write calls,
-  fixing datadir enumeration through `SHOW DATABASES` and
-  `information_schema.SCHEMATA`.
-- Missing bootstrap `performance_schema` and `sys` schemas.
-- External-mode server option handling for simple per-test `.opt` files.
-  `main.union` now receives `--slow-query-log` and
-  `--log-queries-not-using-indexes`, which fixes the slow-query status and
-  `mysql.slow_log` checks.
-- WASI-native entropy for MariaDB's `my_random_bytes()` path. `random_bytes()`
-  now uses `__wasi_random_get()` instead of OpenSSL's unavailable entropy
-  discovery path, which fixes `main.func_str`.
-
-Tests that flipped from failing to passing since `build/mtr-extern-smoke-current6`:
-
-- `main.func_str`
-
-Tests that flipped from failing to passing since `build/mtr-extern-smoke-current5`:
-
-- `main.union`
-
-Tests that flipped from failing to passing since `build/mtr-extern-smoke-current4`:
-
-- `main.type_varchar`
-
-Tests that flipped from failing to passing since `build/mtr-extern-smoke-current3`:
-
-- `main.select`
-- `main.create`
-
-Tests that flipped from failing to passing since `build/mtr-extern-smoke-current2`:
-
-- `main.insert`
-- `main.update`
-- `main.delete`
-- `main.type_int`
-- `main.func_math`
-- `main.subselect`
-- `innodb.create_select`
-- `innodb.alter_table`
-
-Direct repros that now pass:
-
-- Explicit MyISAM table create/insert/select.
-- `CREATE TEMPORARY TABLE ... ENGINE=MyISAM SELECT ...`.
-- A grouped InnoDB query requiring an internal temporary table.
-
-## Next likely fixes
-
-1. Replace the minimal grant/system-table bootstrap with enough of
-   `mariadb-install-db` to match normal MTR metadata more closely.
-2. Teach the harness how to skip, emulate, or explicitly mark MTR restart
-   includes for an externally managed Wasmtime server.
-3. Decide whether to use alternate expected-result files or targeted skips for
-   subcases whose expected output assumes InnoDB is unavailable.
-4. Investigate the remaining SQL behavior diffs in `ANALYZE FORMAT=JSON` and
-   InnoDB `ROW_FORMAT=FIXED`.
+The bootstrap SQL is intentionally minimal and is not a full replacement for
+`mariadb-install-db`. Broader MTR coverage will likely expose more system-table
+and privilege-table assumptions.

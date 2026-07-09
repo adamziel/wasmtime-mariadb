@@ -20,6 +20,7 @@ else
     --key-buffer-size=1M
     --sort-buffer-size=256K
     --max-heap-table-size=1M
+    --loose-innodb-buffer-pool-size=8M
     --loose-aria-pagecache-buffer-size=8M
     --local-infile=1
     --log-bin-trust-function-creators=1
@@ -189,6 +190,8 @@ append_test_server_options() {
 
   read_test_option_file "$mtr_dir/$suite/$name.opt"
   read_test_option_file "$mtr_dir/$suite/$name-master.opt"
+  read_test_option_file "$mtr_dir/suite/$suite/t/$name.opt"
+  read_test_option_file "$mtr_dir/suite/$suite/t/$name-master.opt"
 }
 
 rm -rf "$out_dir"
@@ -197,31 +200,77 @@ summary="$out_dir/summary.tsv"
 printf 'test\tstatus\texit_code\tlog\n' > "$summary"
 
 server_pid=""
+server_pid_file=""
+server_port=""
+backend_port_file=""
+server_error_log=""
+tcp_proxy_pid=""
 proxy_pid=""
 proxy_socket=""
+restart_watcher_pid=""
 cleanup_server() {
+  if [[ -n "$restart_watcher_pid" ]]; then
+    kill "$restart_watcher_pid" 2>/dev/null || true
+    wait "$restart_watcher_pid" 2>/dev/null || true
+    restart_watcher_pid=""
+  fi
   if [[ -n "$proxy_pid" ]]; then
     kill "$proxy_pid" 2>/dev/null || true
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
   fi
+  if [[ -n "$tcp_proxy_pid" ]]; then
+    kill "$tcp_proxy_pid" 2>/dev/null || true
+    wait "$tcp_proxy_pid" 2>/dev/null || true
+    tcp_proxy_pid=""
+  fi
   if [[ -n "$proxy_socket" ]]; then
     rm -f "$proxy_socket"
     proxy_socket=""
   fi
+  local pids=()
   if [[ -n "$server_pid" ]]; then
-    kill "$server_pid" 2>/dev/null || true
+    pids+=("$server_pid")
+  fi
+  if [[ -n "$server_pid_file" && -r "$server_pid_file" ]]; then
+    local pid_from_file
+    pid_from_file="$(<"$server_pid_file")"
+    if [[ -n "$pid_from_file" ]]; then
+      pids+=("$pid_from_file")
+    fi
+  fi
+
+  local pid
+  local seen=" "
+  for pid in "${pids[@]}"; do
+    if [[ "$seen" == *" $pid "* ]]; then
+      continue
+    fi
+    seen+="$pid "
+    kill "$pid" 2>/dev/null || true
+  done
+
+  seen=" "
+  for pid in "${pids[@]}"; do
+    if [[ "$seen" == *" $pid "* ]]; then
+      continue
+    fi
+    seen+="$pid "
     for _ in $(seq 1 50); do
-      if ! kill -0 "$server_pid" 2>/dev/null; then
+      if ! kill -0 "$pid" 2>/dev/null; then
         break
       fi
       sleep 0.1
     done
-    if kill -0 "$server_pid" 2>/dev/null; then
-      kill -KILL "$server_pid" 2>/dev/null || true
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
     fi
-    wait "$server_pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
     server_pid=""
+  done
+  server_pid=""
+  if [[ -n "$server_pid_file" ]]; then
+    rm -f "$server_pid_file"
   fi
 }
 trap cleanup_server EXIT
@@ -240,17 +289,17 @@ wait_ready() {
     sleep 1
   done
 
-  cat "$run_dir/mariadbd-runtime.err" 2>/dev/null || true
+  cat "$run_dir/mariadbd-runtime.err" "$server_error_log" 2>/dev/null || true
   return 1
 }
 
 port_is_listening() {
   local port="$1"
 
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltn "sport = :$port" | tail -n +2 | grep -q .
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 1 bash -c ":</dev/tcp/127.0.0.1/$port" >/dev/null 2>&1
   else
-    mariadb-admin --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 ping >/dev/null 2>&1
+    bash -c ":</dev/tcp/127.0.0.1/$port" >/dev/null 2>&1
   fi
 }
 
@@ -266,12 +315,169 @@ wait_port_closed() {
   return 1
 }
 
+pick_backend_port() {
+  python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
 start_server() {
   local skip_grants="$1"
+  shift
+  local restart_args=("$@")
 
-  RUN_DIR="$run_dir" PORT="$port" RUNNER_ARGS="$test_runner_args" SKIP_GRANT_TABLES="$skip_grants" \
-    "$root/scripts/run-server.sh" "${test_server_args[@]}" >"$test_dir/server.stdout" 2>"$test_dir/server.stderr" &
+  if [[ -n "$backend_port_file" ]]; then
+    printf '127.0.0.1 %s\n' "$server_port" > "$backend_port_file"
+  fi
+
+  RUN_DIR="$run_dir" PORT="$server_port" RUNNER_ARGS="$test_runner_args" SKIP_GRANT_TABLES="$skip_grants" \
+    "$root/scripts/run-server.sh" "${test_server_args[@]}" "${restart_args[@]}" \
+    >>"$test_dir/server.stdout" 2>>"$test_dir/server.stderr" &
   server_pid=$!
+  if [[ -n "$server_pid_file" ]]; then
+    printf '%s\n' "$server_pid" > "$server_pid_file"
+  fi
+}
+
+stop_server_for_mtr_restart() {
+  local watcher_log="$1"
+  local pid=""
+
+  sleep 0.2
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 2 mariadb-admin --protocol=TCP -h127.0.0.1 -P"$server_port" -uroot --ssl=0 shutdown \
+      >>"$watcher_log" 2>&1 || true
+  else
+    mariadb-admin --protocol=TCP -h127.0.0.1 -P"$server_port" -uroot --ssl=0 shutdown \
+      >>"$watcher_log" 2>&1 || true
+  fi
+
+  if [[ -r "$server_pid_file" ]]; then
+    pid="$(<"$server_pid_file")"
+  fi
+
+  for _ in $(seq 1 50); do
+    if ! port_is_listening "$server_port"; then
+      return 0
+    fi
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      sleep 0.1
+      continue
+    fi
+    sleep 0.1
+  done
+
+  if [[ -n "$pid" ]]; then
+    kill "$pid" >>"$watcher_log" 2>&1 || true
+  fi
+  for _ in $(seq 1 50); do
+    if ! port_is_listening "$server_port"; then
+      return 0
+    fi
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      sleep 0.1
+      continue
+    fi
+    sleep 0.1
+  done
+
+  if [[ -n "$pid" ]]; then
+    kill -KILL "$pid" >>"$watcher_log" 2>&1 || true
+  fi
+}
+
+start_server_for_mtr_restart() {
+  local watcher_log="$1"
+  shift
+  local restart_args=("$@")
+  local attempt
+
+  for attempt in $(seq 1 30); do
+    server_port="$(pick_backend_port)"
+    printf 'restart watcher: start attempt %s on backend port %s\n' "$attempt" "$server_port" >>"$watcher_log"
+    start_server 0 "${restart_args[@]}"
+    if wait_ready "$server_port" "$run_dir" >>"$watcher_log" 2>&1; then
+      printf 'restart watcher: server ready on backend port %s\n' "$server_port" >>"$watcher_log"
+      return 0
+    fi
+    wait "$server_pid" 2>/dev/null || true
+    rm -f "$server_pid_file"
+    sleep 1
+  done
+
+  printf 'restart watcher: server did not become ready on backend port %s\n' "$server_port" >>"$watcher_log"
+  return 1
+}
+
+start_mtr_restart_watcher() {
+  local expect_dir="$vardir/tmp"
+  local watcher_log="$test_dir/restart-watcher.log"
+
+  (
+    set +e
+    local expect_file=""
+    local processed_content=""
+    local content new_content line clean_line restart_tail
+    local restart_args=()
+
+    printf 'restart watcher: watching %s\n' "$expect_dir" >"$watcher_log"
+    while true; do
+      if [[ -z "$expect_file" || ! -e "$expect_file" ]]; then
+        for candidate in "$expect_dir"/*.expect; do
+          if [[ -e "$candidate" ]]; then
+            expect_file="$candidate"
+            processed_content=""
+            printf 'restart watcher: using %s\n' "$expect_file" >>"$watcher_log"
+            break
+          fi
+        done
+      fi
+
+      if [[ -n "$expect_file" && -r "$expect_file" ]]; then
+        content="$(cat "$expect_file" 2>/dev/null || true)"
+        if [[ "$content" != "$processed_content" ]]; then
+          if [[ "$content" == "$processed_content"* ]]; then
+            new_content="${content#"$processed_content"}"
+          else
+            new_content="$content"
+          fi
+          processed_content="$content"
+          while IFS= read -r line; do
+            if [[ -z "$line" ]]; then
+              continue
+            fi
+            clean_line="${line%\"}"
+            clean_line="${clean_line#\"}"
+            printf 'restart watcher: command %s\n' "$clean_line" >>"$watcher_log"
+
+            case "$clean_line" in
+              wait)
+                stop_server_for_mtr_restart "$watcher_log"
+                ;;
+              restart|restart:*)
+                restart_args=()
+                if [[ "$clean_line" == restart:* ]]; then
+                  restart_tail="${clean_line#restart: }"
+                  read -r -a restart_args <<< "$restart_tail"
+                fi
+                start_server_for_mtr_restart "$watcher_log" "${restart_args[@]}"
+                ;;
+              restart_bindir*)
+                start_server_for_mtr_restart "$watcher_log"
+                ;;
+            esac
+          done <<< "$new_content"
+        fi
+      fi
+
+      sleep 0.05
+    done
+  ) &
+  restart_watcher_pid=$!
 }
 
 start_socket_proxy() {
@@ -298,18 +504,46 @@ start_socket_proxy() {
   return 1
 }
 
+start_tcp_proxy() {
+  local public_port="$1"
+  local backend_file="$2"
+  local log_dir="$3"
+
+  "$root/scripts/tcp-port-proxy.py" 127.0.0.1 "$public_port" "$backend_file" \
+    >"$log_dir/tcp-proxy.stdout" 2>"$log_dir/tcp-proxy.stderr" &
+  tcp_proxy_pid=$!
+
+  for _ in $(seq 1 30); do
+    if port_is_listening "$public_port"; then
+      return 0
+    fi
+    if ! kill -0 "$tcp_proxy_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  cat "$log_dir/tcp-proxy.stderr" 2>/dev/null || true
+  return 1
+}
+
 for idx in "${!tests[@]}"; do
+  cleanup_server
+
   test_name="${tests[$idx]}"
   port=$((base_port + idx))
+  server_port="$(pick_backend_port)"
   safe_name="${test_name//./_}"
   test_dir="$out_dir/$safe_name"
   vardir="$test_dir/var"
   run_dir="$vardir/mysqld.1"
   log_file="$test_dir/mtr.log"
+  server_error_log="$vardir/log/mysqld.1.err"
   socket_path="/tmp/wasmtime-mariadb-mtr-$port.sock"
+  server_pid_file="$test_dir/server.pid"
+  backend_port_file="$test_dir/backend-port"
   mkdir -p "$test_dir"
 
-  cleanup_server
   rm -rf "$run_dir" "$vardir" "$socket_path"
   mkdir -p "$vardir/log" "$vardir/run" "$vardir/tmp"
   test_runner_args="$runner_args --preopen $run_dir=$run_dir"
@@ -320,7 +554,7 @@ for idx in "${!tests[@]}"; do
   test_server_args+=(
     "--datadir=$run_dir/data"
     "--tmpdir=$run_dir/tmp"
-    "--log-error=$run_dir/mariadbd-runtime.err"
+    "--log-error=$server_error_log"
     "--pid-file=$run_dir/data/mysqld.pid"
     "--secure-file-priv=$vardir"
   )
@@ -328,21 +562,24 @@ for idx in "${!tests[@]}"; do
 
   status="FAIL"
   exit_code=0
-  if wait_ready "$port" "$run_dir"; then
-    mariadb --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 <"$init_sql" >"$test_dir/init.stdout" 2>"$test_dir/init.stderr"
+  if wait_ready "$server_port" "$run_dir"; then
+    mariadb --protocol=TCP -h127.0.0.1 -P"$server_port" -uroot --ssl=0 <"$init_sql" >"$test_dir/init.stdout" 2>"$test_dir/init.stderr"
 
     if [[ "$restart_with_grants" == "1" ]]; then
       cleanup_server
       if [[ "$grant_port_offset" -ne 0 ]]; then
         port=$((port + grant_port_offset))
+        server_port="$(pick_backend_port)"
         socket_path="/tmp/wasmtime-mariadb-mtr-$port.sock"
-      elif ! wait_port_closed "$port"; then
+      elif ! wait_port_closed "$server_port"; then
         exit_code=124
         printf 'server port did not close before grant-table restart\n' > "$log_file"
+      else
+        server_port="$(pick_backend_port)"
       fi
       if [[ "$exit_code" -eq 0 ]]; then
         start_server 0
-        if ! wait_ready "$port" "$run_dir"; then
+        if ! wait_ready "$server_port" "$run_dir"; then
           exit_code=124
           printf 'server did not become ready after grant-table restart\n' > "$log_file"
         fi
@@ -350,7 +587,9 @@ for idx in "${!tests[@]}"; do
     fi
 
     if [[ "$exit_code" -eq 0 ]]; then
-      if start_socket_proxy "$port" "$socket_path" "$test_dir"; then
+      if start_tcp_proxy "$port" "$backend_port_file" "$test_dir" &&
+        start_socket_proxy "$port" "$socket_path" "$test_dir"; then
+        start_mtr_restart_watcher
         set +e
         (
           cd "$mtr_dir"
