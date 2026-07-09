@@ -68,11 +68,11 @@ defaults such as `--default-storage-engine=MyISAM`,
 
 Raw logs from the latest run:
 
-- `build/mtr-extern-smoke-current6/summary.tsv`
-- `build/mtr-extern-smoke-current6/<test_name>/mtr.log`
-- `build/mtr-extern-smoke-current6/<test_name>/init.stdout`
-- `build/mtr-extern-smoke-current6/<test_name>/init.stderr`
-- `build/mtr-extern-smoke-current6/<test_name>/var/mysqld.1/mariadbd-runtime.err`
+- `build/mtr-extern-smoke-current7/summary.tsv`
+- `build/mtr-extern-smoke-current7/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current7/<test_name>/init.stdout`
+- `build/mtr-extern-smoke-current7/<test_name>/init.stderr`
+- `build/mtr-extern-smoke-current7/<test_name>/var/mysqld.1/mariadbd-runtime.err`
 
 The init SQL is intentionally minimal. It creates `mysql.proc`,
 `mysql.global_priv`, privilege tables, log tables, `mysql.servers`,
@@ -97,8 +97,8 @@ start. In this smoke set that covers `main.type_varchar`, `main.union`, and
 
 22 tests were run:
 
-- Passed: 15
-- Failed: 7
+- Passed: 16
+- Failed: 6
 
 Passed:
 
@@ -110,6 +110,7 @@ Passed:
 - `main.type_int`
 - `main.type_varchar`
 - `main.func_math`
+- `main.func_str`
 - `main.union`
 - `main.subselect`
 - `main.ps`
@@ -123,7 +124,6 @@ Passed:
 | Test | First failure |
 | --- | --- |
 | `main.drop` | Result diff: WASI reports `ENOTEMPTY` as errno `55`; the pinned expected file wants Linux errno `39`. `SHOW DATABASES` now matches. |
-| `main.func_str` | Result diff: `random_bytes()` returns deterministic or `NULL` results in cases where the expected file has non-`NULL` random byte lengths, plus one binary conversion predicate differs. |
 | `main.join` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable and expects three warnings; this build has InnoDB enabled. The `mysql.global_priv` metadata rows now match. |
 | `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent, and `innodb_sort_buffer_size` is present in `SHOW VARIABLES`. |
 | `main.group_by` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable for one subcase, while this build has InnoDB enabled. |
@@ -141,9 +141,8 @@ The failures now cluster into a few concrete areas:
    assume InnoDB is unavailable in `main` subcases, while this build has InnoDB.
 3. MTR restart assumptions. `innodb.foreign_key` tries to use restart includes
    that expect MTR to own the server lifecycle.
-4. Remaining behavior differences, including `random_bytes()` coercion
-   behavior, `ANALYZE FORMAT=JSON` fields, and `ROW_FORMAT=FIXED` handling in
-   InnoDB.
+4. Remaining behavior differences, including `ANALYZE FORMAT=JSON` fields and
+   `ROW_FORMAT=FIXED` handling in InnoDB.
 
 ## Fixed in this pass
 
@@ -177,6 +176,13 @@ The latest run no longer contains these earlier blockers:
   `main.union` now receives `--slow-query-log` and
   `--log-queries-not-using-indexes`, which fixes the slow-query status and
   `mysql.slow_log` checks.
+- WASI-native entropy for MariaDB's `my_random_bytes()` path. `random_bytes()`
+  now uses `__wasi_random_get()` instead of OpenSSL's unavailable entropy
+  discovery path, which fixes `main.func_str`.
+
+Tests that flipped from failing to passing since `build/mtr-extern-smoke-current6`:
+
+- `main.func_str`
 
 Tests that flipped from failing to passing since `build/mtr-extern-smoke-current5`:
 
@@ -216,6 +222,5 @@ Direct repros that now pass:
    includes for an externally managed Wasmtime server.
 3. Decide whether to use alternate expected-result files or targeted skips for
    subcases whose expected output assumes InnoDB is unavailable.
-4. Investigate the remaining SQL behavior diffs in string predicates,
-   `random_bytes()` argument coercion, `ANALYZE FORMAT=JSON`, and InnoDB
-   `ROW_FORMAT=FIXED`.
+4. Investigate the remaining SQL behavior diffs in `ANALYZE FORMAT=JSON` and
+   InnoDB `ROW_FORMAT=FIXED`.

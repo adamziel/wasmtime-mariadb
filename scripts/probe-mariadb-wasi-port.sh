@@ -237,6 +237,10 @@ patch_mariadb_source() {
   ' "$src/sql/log.h"
 
   perl -0pi -e '
+    s/  if \(RAND_bytes\(buf, num\) != 1\)\n    return MY_AES_OPENSSL_ERROR;/#if defined(__wasi__)\n  if (wasmtime_mariadb_random_bytes(buf, num))\n    return MY_AES_OPENSSL_ERROR;\n#else\n  if (RAND_bytes(buf, num) != 1)\n    return MY_AES_OPENSSL_ERROR;\n#endif/s;
+  ' "$src/mysys_ssl/my_crypt.cc"
+
+  perl -0pi -e '
     s/(#include "os0file\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
     s/fstat\(m_handle, &m_file_info\);/wasmtime_mariadb_file_fstat(m_handle, \&m_file_info);/g;
   ' "$src/storage/innobase/fsp/fsp0file.cc"

@@ -9,11 +9,13 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <wasi/wasip1.h>
 #include "sys/resource.h"
 #include <unistd.h>
 
@@ -150,6 +152,20 @@
 #ifndef TRAP_TRACE
 #define TRAP_TRACE 2
 #endif
+
+static inline int wasmtime_mariadb_random_bytes(unsigned char *buf, int num)
+{
+  if (num < 0)
+  {
+    errno= EINVAL;
+    return -1;
+  }
+
+  return __wasi_random_get((uint8_t *) buf, (__wasi_size_t) num) ==
+                 __WASI_ERRNO_SUCCESS
+           ? 0
+           : -1;
+}
 
 typedef struct siginfo_t {
   int si_signo;
