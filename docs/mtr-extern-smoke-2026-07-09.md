@@ -68,11 +68,11 @@ defaults such as `--default-storage-engine=MyISAM`,
 
 Raw logs from the latest run:
 
-- `build/mtr-extern-smoke-current5/summary.tsv`
-- `build/mtr-extern-smoke-current5/<test_name>/mtr.log`
-- `build/mtr-extern-smoke-current5/<test_name>/init.stdout`
-- `build/mtr-extern-smoke-current5/<test_name>/init.stderr`
-- `build/mtr-extern-smoke-current5/<test_name>/var/mysqld.1/mariadbd-runtime.err`
+- `build/mtr-extern-smoke-current6/summary.tsv`
+- `build/mtr-extern-smoke-current6/<test_name>/mtr.log`
+- `build/mtr-extern-smoke-current6/<test_name>/init.stdout`
+- `build/mtr-extern-smoke-current6/<test_name>/init.stderr`
+- `build/mtr-extern-smoke-current6/<test_name>/var/mysqld.1/mariadbd-runtime.err`
 
 The init SQL is intentionally minimal. It creates `mysql.proc`,
 `mysql.global_priv`, privilege tables, log tables, `mysql.servers`,
@@ -87,12 +87,18 @@ load this bootstrap SQL, then restarts it with grant tables enabled before
 running MTR. The second server uses `MTR_GRANT_PORT_OFFSET=10000` by default to
 avoid short-lived TCP bind races on restart.
 
+For an external server, MTR does not launch `mariadbd` and therefore does not
+apply per-test server option files itself. The harness now applies simple
+`<suite>/<test>.opt` and `<suite>/<test>-master.opt` files before each server
+start. In this smoke set that covers `main.type_varchar`, `main.union`, and
+`main.ps`.
+
 ## Summary
 
 22 tests were run:
 
-- Passed: 14
-- Failed: 8
+- Passed: 15
+- Failed: 7
 
 Passed:
 
@@ -104,6 +110,7 @@ Passed:
 - `main.type_int`
 - `main.type_varchar`
 - `main.func_math`
+- `main.union`
 - `main.subselect`
 - `main.ps`
 - `main.prepare`
@@ -118,7 +125,6 @@ Passed:
 | `main.drop` | Result diff: WASI reports `ENOTEMPTY` as errno `55`; the pinned expected file wants Linux errno `39`. `SHOW DATABASES` now matches. |
 | `main.func_str` | Result diff: `random_bytes()` returns deterministic or `NULL` results in cases where the expected file has non-`NULL` random byte lengths, plus one binary conversion predicate differs. |
 | `main.join` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable and expects three warnings; this build has InnoDB enabled. The `mysql.global_priv` metadata rows now match. |
-| `main.union` | Result diff: slow-query counters stay at `0` and `mysql.slow_log` does not receive the expected row. The earlier missing metadata row is fixed. |
 | `main.order_by` | Result diff in `ANALYZE FORMAT=JSON`; runtime timing fields such as `r_total_time_ms` are absent, and `innodb_sort_buffer_size` is present in `SHOW VARIABLES`. |
 | `main.group_by` | Result diff: the pinned expected file assumes `ENGINE=InnoDB` is unavailable for one subcase, while this build has InnoDB enabled. |
 | `innodb.innodb` | `CREATE TABLE ... ROW_FORMAT=FIXED` failed with `ER_CANT_CREATE_TABLE (errno: 140 "Wrong create options")`. |
@@ -129,8 +135,8 @@ Passed:
 The failures now cluster into a few concrete areas:
 
 1. Remaining minimal-datadir/runtime differences. The grant-enabled restart and
-   datadir enumeration now work for this smoke set, but table-based slow
-   logging still does not fully match a normal MTR datadir.
+   datadir enumeration now work for this smoke set, but some function and
+   optimizer result details still differ from the pinned expected files.
 2. Expected-result variants for the exact server build. Some pinned results
    assume InnoDB is unavailable in `main` subcases, while this build has InnoDB.
 3. MTR restart assumptions. `innodb.foreign_key` tries to use restart includes
@@ -167,6 +173,14 @@ The latest run no longer contains these earlier blockers:
   fixing datadir enumeration through `SHOW DATABASES` and
   `information_schema.SCHEMATA`.
 - Missing bootstrap `performance_schema` and `sys` schemas.
+- External-mode server option handling for simple per-test `.opt` files.
+  `main.union` now receives `--slow-query-log` and
+  `--log-queries-not-using-indexes`, which fixes the slow-query status and
+  `mysql.slow_log` checks.
+
+Tests that flipped from failing to passing since `build/mtr-extern-smoke-current5`:
+
+- `main.union`
 
 Tests that flipped from failing to passing since `build/mtr-extern-smoke-current4`:
 
@@ -197,8 +211,7 @@ Direct repros that now pass:
 ## Next likely fixes
 
 1. Replace the minimal grant/system-table bootstrap with enough of
-   `mariadb-install-db` to match normal MTR metadata and logging behavior more
-   closely.
+   `mariadb-install-db` to match normal MTR metadata more closely.
 2. Teach the harness how to skip, emulate, or explicitly mark MTR restart
    includes for an externally managed Wasmtime server.
 3. Decide whether to use alternate expected-result files or targeted skips for

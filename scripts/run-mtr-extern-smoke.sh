@@ -163,6 +163,34 @@ if [[ -z "$mtr_bindir" ]]; then
   prepare_source_mtr_toolroot
 fi
 
+read_test_option_file() {
+  local opt_file="$1"
+  local line
+  local words=()
+
+  if [[ ! -r "$opt_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    if [[ -z "${line//[[:space:]]/}" ]]; then
+      continue
+    fi
+    read -r -a words <<< "$line"
+    test_server_args+=("${words[@]}")
+  done < "$opt_file"
+}
+
+append_test_server_options() {
+  local test_name="$1"
+  local suite="${test_name%%.*}"
+  local name="${test_name#*.}"
+
+  read_test_option_file "$mtr_dir/$suite/$name.opt"
+  read_test_option_file "$mtr_dir/$suite/$name-master.opt"
+}
+
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 summary="$out_dir/summary.tsv"
@@ -287,6 +315,9 @@ for idx in "${!tests[@]}"; do
   test_runner_args="$runner_args --preopen $run_dir=$run_dir"
   test_server_args=(
     "${extra_server_args[@]}"
+  )
+  append_test_server_options "$test_name"
+  test_server_args+=(
     "--datadir=$run_dir/data"
     "--tmpdir=$run_dir/tmp"
     "--log-error=$run_dir/mariadbd-runtime.err"
