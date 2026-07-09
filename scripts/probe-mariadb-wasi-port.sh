@@ -137,7 +137,7 @@ patch_mariadb_source() {
   ' "$src/mysys/my_create.c"
 
   perl -0pi -e '
-    s/(#include\s+<my_dir\.h>[^\n]*\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define fstat(...) wasmtime_mariadb_file_fstat(__VA_ARGS__)\n#endif\n/;
+    s/(#include\s+<my_dir\.h>[^\n]*\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#define fstat(...) wasmtime_mariadb_file_fstat(__VA_ARGS__)\n#define stat(...) wasmtime_mariadb_file_stat(__VA_ARGS__)\n#endif\n/;
   ' "$src/mysys/my_lib.c"
 
   perl -0pi -e '

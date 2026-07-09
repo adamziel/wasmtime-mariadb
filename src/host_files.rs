@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -404,21 +404,24 @@ impl HostFiles {
             let Some(host_file) = inner.files.get(&fd) else {
                 return Err(libc::EBADF);
             };
-            let metadata = host_file.file.metadata().map_err(io_errno)?;
-            Ok(HostFileStat {
-                size: i64::try_from(metadata.size()).map_err(|_| libc::EOVERFLOW)?,
-                blocks: i64::try_from(metadata.blocks()).map_err(|_| libc::EOVERFLOW)?,
-                block_size: i64::try_from(metadata.blksize()).map_err(|_| libc::EOVERFLOW)?,
-                dev: i64::try_from(metadata.dev()).map_err(|_| libc::EOVERFLOW)?,
-                mode: i32::try_from(metadata.mode()).map_err(|_| libc::EOVERFLOW)?,
-                atime: metadata.atime(),
-                mtime: metadata.mtime(),
-                ctime: metadata.ctime(),
-            })
+            stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
         }
         #[cfg(not(unix))]
         {
             let _ = fd;
+            Err(libc::ENOSYS)
+        }
+    }
+
+    fn stat(&self, guest_path: &str) -> std::result::Result<HostFileStat, i32> {
+        #[cfg(unix)]
+        {
+            let host_path = self.resolve(guest_path)?;
+            stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = guest_path;
             Err(libc::ENOSYS)
         }
     }
@@ -607,7 +610,74 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         },
     )?;
 
+    linker.func_wrap(
+        MODULE_NAME,
+        "stat",
+        |mut caller: Caller<'_, AppState>,
+         path_ptr: i32,
+         size_ptr: i32,
+         blocks_ptr: i32,
+         block_size_ptr: i32,
+         dev_ptr: i32,
+         mode_ptr: i32,
+         atime_ptr: i32,
+         mtime_ptr: i32,
+         ctime_ptr: i32|
+         -> i32 {
+            let path = match read_cstr(&mut caller, path_ptr) {
+                Ok(path) => path,
+                Err(errno) => return neg_errno(errno),
+            };
+            let stat = match caller.data().files.stat(&path) {
+                Ok(stat) => stat,
+                Err(errno) => {
+                    file_trace(format_args!("stat path={path:?} errno={errno}"));
+                    return neg_errno(errno);
+                }
+            };
+            if let Err(errno) = write_i64(&mut caller, size_ptr, stat.size) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, blocks_ptr, stat.blocks) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, block_size_ptr, stat.block_size) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, dev_ptr, stat.dev) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i32(&mut caller, mode_ptr, stat.mode) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, atime_ptr, stat.atime) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, mtime_ptr, stat.mtime) {
+                return neg_errno(errno);
+            }
+            if let Err(errno) = write_i64(&mut caller, ctime_ptr, stat.ctime) {
+                return neg_errno(errno);
+            }
+            0
+        },
+    )?;
+
     Ok(())
+}
+
+#[cfg(unix)]
+fn stat_from_metadata(metadata: Metadata) -> std::result::Result<HostFileStat, i32> {
+    Ok(HostFileStat {
+        size: i64::try_from(metadata.size()).map_err(|_| libc::EOVERFLOW)?,
+        blocks: i64::try_from(metadata.blocks()).map_err(|_| libc::EOVERFLOW)?,
+        block_size: i64::try_from(metadata.blksize()).map_err(|_| libc::EOVERFLOW)?,
+        dev: i64::try_from(metadata.dev()).map_err(|_| libc::EOVERFLOW)?,
+        mode: i32::try_from(metadata.mode()).map_err(|_| libc::EOVERFLOW)?,
+        atime: metadata.atime(),
+        mtime: metadata.mtime(),
+        ctime: metadata.ctime(),
+    })
 }
 
 fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {

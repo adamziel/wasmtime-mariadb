@@ -40,6 +40,11 @@ int32_t wasmtime_mariadb_host_file_fstat(
     int32_t fd, int64_t *size, int64_t *blocks, int64_t *block_size,
     int64_t *dev, int32_t *mode, int64_t *atime, int64_t *mtime,
     int64_t *ctime);
+__attribute__((import_module("wasmtime_mariadb_files"), import_name("stat")))
+int32_t wasmtime_mariadb_host_file_stat(
+    const char *path, int64_t *size, int64_t *blocks, int64_t *block_size,
+    int64_t *dev, int32_t *mode, int64_t *atime, int64_t *mtime,
+    int64_t *ctime);
 
 static inline int wasmtime_mariadb_file_decode_i32(int32_t rc) {
   if (rc < 0) {
@@ -174,21 +179,13 @@ static inline int wasmtime_mariadb_file_sync(int fd, int data_only) {
       wasmtime_mariadb_host_file_sync(fd, data_only));
 }
 
-static inline int wasmtime_mariadb_file_fstat(int fd, struct stat *st) {
-  int64_t size = 0;
-  int64_t blocks = 0;
-  int64_t block_size = 4096;
-  int64_t dev = 1;
-  int64_t atime = 0;
-  int64_t mtime = 0;
-  int64_t ctime = 0;
-  int32_t mode = S_IFREG | 0600;
-  int rc = wasmtime_mariadb_file_decode_i32(
-      wasmtime_mariadb_host_file_fstat(fd, &size, &blocks, &block_size, &dev,
-                                       &mode, &atime, &mtime, &ctime));
-
-  if (rc != 0) {
-    return rc;
+static inline int wasmtime_mariadb_file_fill_stat(
+    int32_t rc, struct stat *st, int64_t size, int64_t blocks,
+    int64_t block_size, int64_t dev, int32_t mode, int64_t atime,
+    int64_t mtime, int64_t ctime) {
+  int decoded = wasmtime_mariadb_file_decode_i32(rc);
+  if (decoded != 0) {
+    return decoded;
   }
 
   memset(st, 0, sizeof(*st));
@@ -202,6 +199,39 @@ static inline int wasmtime_mariadb_file_fstat(int fd, struct stat *st) {
   st->st_mtime = (time_t)mtime;
   st->st_ctime = (time_t)ctime;
   return 0;
+}
+
+static inline int wasmtime_mariadb_file_fstat(int fd, struct stat *st) {
+  int64_t size = 0;
+  int64_t blocks = 0;
+  int64_t block_size = 4096;
+  int64_t dev = 1;
+  int64_t atime = 0;
+  int64_t mtime = 0;
+  int64_t ctime = 0;
+  int32_t mode = S_IFREG | 0600;
+  int32_t rc = wasmtime_mariadb_host_file_fstat(
+      fd, &size, &blocks, &block_size, &dev, &mode, &atime, &mtime, &ctime);
+
+  return wasmtime_mariadb_file_fill_stat(rc, st, size, blocks, block_size, dev,
+                                         mode, atime, mtime, ctime);
+}
+
+static inline int wasmtime_mariadb_file_stat(const char *path,
+                                             struct stat *st) {
+  int64_t size = 0;
+  int64_t blocks = 0;
+  int64_t block_size = 4096;
+  int64_t dev = 1;
+  int64_t atime = 0;
+  int64_t mtime = 0;
+  int64_t ctime = 0;
+  int32_t mode = S_IFREG | 0600;
+  int32_t rc = wasmtime_mariadb_host_file_stat(
+      path, &size, &blocks, &block_size, &dev, &mode, &atime, &mtime, &ctime);
+
+  return wasmtime_mariadb_file_fill_stat(rc, st, size, blocks, block_size, dev,
+                                         mode, atime, mtime, ctime);
 }
 
 #endif /* __wasi__ */
