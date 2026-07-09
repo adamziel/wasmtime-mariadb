@@ -6,6 +6,7 @@ mtr_dir="${MTR_DIR:-/usr/share/mariadb-test}"
 out_dir="${OUT_DIR:-$root/build/mtr-extern-smoke}"
 base_port="${BASE_PORT:-3340}"
 read -r -a extra_server_args <<< "${SERVER_ARGS:-}"
+init_sql="$root/scripts/mtr-extern-init.sql"
 
 if [[ "$out_dir" != /* ]]; then
   out_dir="$root/$out_dir"
@@ -47,6 +48,11 @@ fi
 
 if ! command -v mariadb-admin >/dev/null 2>&1 || ! command -v mariadb >/dev/null 2>&1; then
   echo "mariadb client tools are required" >&2
+  exit 2
+fi
+
+if [[ ! -r "$init_sql" ]]; then
+  echo "MTR init SQL not found: $init_sql" >&2
   exit 2
 fi
 
@@ -101,10 +107,7 @@ for idx in "${!tests[@]}"; do
   status="FAIL"
   exit_code=0
   if wait_ready "$port" "$run_dir"; then
-    mariadb --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 <<'SQL' >/dev/null
-CREATE DATABASE IF NOT EXISTS mysql;
-CREATE DATABASE IF NOT EXISTS test;
-SQL
+    mariadb --protocol=TCP -h127.0.0.1 -P"$port" -uroot --ssl=0 <"$init_sql" >"$test_dir/init.stdout" 2>"$test_dir/init.stderr"
 
     set +e
     (
