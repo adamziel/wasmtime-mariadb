@@ -44,4 +44,9 @@ exec "$bin" \
   --port="$port" \
   --bind-address=127.0.0.1 \
   --skip-log-bin \
+  --default-storage-engine=InnoDB \
+  --innodb-buffer-pool-size=16M \
+  --innodb-buffer-pool-size-max=16M \
+  --innodb-log-file-size=8M \
+  --innodb-log-buffer-size=4M \
   "$@"

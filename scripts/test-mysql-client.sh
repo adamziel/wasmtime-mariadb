@@ -29,7 +29,9 @@ table="mysql_client_smoke_$(date +%s)_$$"
   "${ssl_arg[@]}" <<SQL
 SELECT VERSION();
 CREATE DATABASE IF NOT EXISTS smoke;
-CREATE TABLE smoke.$table (id INT PRIMARY KEY, payload VARCHAR(64)) ENGINE=MEMORY;
+CREATE TABLE smoke.$table (id INT PRIMARY KEY, payload VARCHAR(64));
 INSERT INTO smoke.$table VALUES (1, 'hello from mysql client');
-SELECT COUNT(*) AS rows_inserted FROM smoke.$table;
+SELECT * FROM smoke.$table;
+SELECT ENGINE FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = 'smoke' AND TABLE_NAME = '$table';
 SQL

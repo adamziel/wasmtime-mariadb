@@ -6,7 +6,7 @@ module inside a native Wasmtime host executable.
 This is the MariaDB counterpart to `adamziel/wasmtime-mysql`. It is not an
 official MariaDB port. The current build can start `mariadbd` in Wasmtime,
 listen on TCP, accept normal MySQL/MariaDB clients, and run basic SQL against
-`MEMORY` tables.
+InnoDB tables.
 
 ## Requirements
 
@@ -84,6 +84,10 @@ as guest `/tmp`, and starts the process from the host datadir. That current
 working directory matters for this prototype because the custom file shim does
 not yet model guest `chdir()`.
 
+The helper also sets small InnoDB defaults that fit the current WASI build:
+16 MiB buffer pool, 8 MiB redo log file, and 4 MiB redo log buffer. Extra
+arguments passed to `run-server.sh` are forwarded to `mariadbd`.
+
 If port `3307` is occupied, choose another port:
 
 ```sh
@@ -111,13 +115,14 @@ mariadb --protocol=TCP -h127.0.0.1 -P3307 -uroot --ssl=0
 ```
 
 This prototype runs with `--skip-grant-tables`, so the documented root
-connection has no password. Use `MEMORY` tables for the working SQL path:
+connection has no password. A normal `CREATE TABLE` uses InnoDB:
 
 ```sql
 CREATE DATABASE demo;
-CREATE TABLE demo.t (id INT PRIMARY KEY, payload VARCHAR(64)) ENGINE=MEMORY;
+CREATE TABLE demo.t (id INT PRIMARY KEY, payload VARCHAR(64));
 INSERT INTO demo.t VALUES (1, 'hello from wasmtime');
 SELECT * FROM demo.t;
+SHOW CREATE TABLE demo.t;
 ```
 
 The included Python client can also verify connectivity without external
@@ -128,7 +133,8 @@ python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5
 ```
 
 The packaged mysql-client smoke script runs `SELECT VERSION()`, creates a
-`MEMORY` table, inserts one row, and verifies `COUNT(*)`:
+default InnoDB table, inserts one row, reads it back, and reports the table
+engine:
 
 ```sh
 PORT=3307 ./scripts/test-mysql-client.sh
@@ -149,8 +155,9 @@ MYSQL=/opt/homebrew/opt/mysql-client/bin/mysql PORT=3307 ./scripts/test-mysql-cl
 ## Benchmark
 
 `scripts/bench-tcp.py` opens concurrent TCP connections, creates one uniquely
-named `MEMORY` table per client in the `bench` schema, inserts rows in batches,
-and verifies `COUNT(*)`.
+named InnoDB table per client in the `bench` schema, inserts rows in batches,
+and verifies `COUNT(*)`. Pass `--engine MEMORY` if you want the older
+in-memory-table smoke benchmark.
 
 ```sh
 python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 2000 --batch-size 100
@@ -158,17 +165,18 @@ python3 scripts/bench-tcp.py --port 3307 --clients 4 --rows 500 --batch-size 100
 ```
 
 Recent numbers from this workspace on Linux x86_64, using the release runner
-and the MariaDB 11.4.12 WASI module. The server was run on port `3317` because
-`3307` was briefly unavailable from a previous test.
+and the MariaDB 11.4.12 WASI module. The server was run on port `3324` with
+the default InnoDB runner settings.
 
 | Clients | Rows/client | Inserted rows | Counted rows | Elapsed | Rows/sec |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 5 | 5 | 5 | 0.001 s | 4,376 |
-| 1 | 2,000 | 2,000 | 2,000 | 0.005 s | 400,182 |
-| 4 | 500 | 2,000 | 2,000 | 0.004 s | 537,227 |
+| 1 | 5 | 5 | 5 | 0.002 s | 2,900 |
+| 1 | 2,000 | 2,000 | 2,000 | 0.009 s | 215,185 |
+| 4 | 500 | 2,000 | 2,000 | 0.006 s | 322,836 |
 
-These numbers are a TCP/protocol smoke benchmark over in-memory tables, not a
-durability or storage-engine benchmark.
+These numbers are a TCP/protocol smoke benchmark over InnoDB with the
+prototype runner's default `--debug-no-sync` setting, not a durability
+benchmark.
 
 ## Development Checks
 
@@ -190,10 +198,16 @@ cargo check --features dev-fixture
 - Experimental only; this is not an official MariaDB or Wasmtime product.
 - The documented server uses `--skip-grant-tables`; authentication and system
   privilege tables are not initialized.
-- `MEMORY` tables are the currently verified SQL path. Data is not persistent.
-- InnoDB is disabled in the current WASI build.
-- MyISAM and Aria are compiled in and can create table files, but inserts
-  currently fail with `Incorrect file format` in local testing.
+- InnoDB is enabled and verified for basic `CREATE TABLE`, `INSERT`, `SELECT`,
+  and simple concurrent inserts, but this is still prototype storage support.
+- File locking is currently a no-op under WASI, and the no-binlog transaction
+  coordinator path uses MariaDB's dummy coordinator instead of the mmap-backed
+  TC log.
+- Crash recovery, XA/two-phase commit, replication, and production durability
+  semantics have not been validated. The documented runner also uses
+  `--debug-no-sync`.
+- MyISAM and Aria are compiled in but are not the verified path for this
+  prototype.
 - `DROP TABLE IF EXISTS` for nonexistent disk-engine tables can report a
   `.par` read-only error in this stripped build, so the benchmark uses unique
   table names instead of pre-dropping.

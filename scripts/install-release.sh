@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --version)
-      version="${2:?--version needs a tag, for example v0.1.2}"
+      version="${2:?--version needs a tag, for example v0.1.3}"
       shift 2
       ;;
     -h|--help)

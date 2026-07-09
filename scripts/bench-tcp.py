@@ -198,7 +198,7 @@ def main():
     parser.add_argument("--clients", type=int, default=8)
     parser.add_argument("--rows", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=50)
-    parser.add_argument("--engine", default="MEMORY")
+    parser.add_argument("--engine", default="InnoDB")
     parser.add_argument("--table-prefix", default="t")
     args = parser.parse_args()
     args.run_id = int(time.time() * 1000)

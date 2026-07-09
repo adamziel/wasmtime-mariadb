@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 
 __attribute__((import_module("wasmtime_mariadb_files"), import_name("open")))
@@ -32,6 +34,11 @@ __attribute__((
 int32_t wasmtime_mariadb_host_file_truncate(int32_t fd, int64_t size);
 __attribute__((import_module("wasmtime_mariadb_files"), import_name("sync")))
 int32_t wasmtime_mariadb_host_file_sync(int32_t fd, int32_t data_only);
+__attribute__((import_module("wasmtime_mariadb_files"), import_name("fstat")))
+int32_t wasmtime_mariadb_host_file_fstat(
+    int32_t fd, int64_t *size, int64_t *blocks, int64_t *block_size,
+    int64_t *dev, int32_t *mode, int64_t *atime, int64_t *mtime,
+    int64_t *ctime);
 
 static inline int wasmtime_mariadb_file_decode_i32(int32_t rc) {
   if (rc < 0) {
@@ -49,11 +56,21 @@ static inline ssize_t wasmtime_mariadb_file_decode_ssize(int32_t rc) {
   return (ssize_t)rc;
 }
 
-static inline int wasmtime_mariadb_file_open(const char *path, int flags,
-                                             mode_t mode) {
+static inline int wasmtime_mariadb_file_open3(const char *path, int flags,
+                                              mode_t mode) {
   return wasmtime_mariadb_file_decode_i32(
       wasmtime_mariadb_host_file_open(path, flags, (int32_t)mode));
 }
+
+static inline int wasmtime_mariadb_file_open2(const char *path, int flags) {
+  return wasmtime_mariadb_file_open3(path, flags, 0);
+}
+
+#define WASMTIME_MARIADB_FILE_OPEN_SELECT(_1, _2, _3, NAME, ...) NAME
+#define wasmtime_mariadb_file_open(...)                                      \
+  WASMTIME_MARIADB_FILE_OPEN_SELECT(__VA_ARGS__,                            \
+                                    wasmtime_mariadb_file_open3,             \
+                                    wasmtime_mariadb_file_open2)(__VA_ARGS__)
 
 static inline int wasmtime_mariadb_file_close(int fd) {
   return wasmtime_mariadb_file_decode_i32(
@@ -118,6 +135,36 @@ static inline int wasmtime_mariadb_file_truncate(int fd, off_t size) {
 static inline int wasmtime_mariadb_file_sync(int fd, int data_only) {
   return wasmtime_mariadb_file_decode_i32(
       wasmtime_mariadb_host_file_sync(fd, data_only));
+}
+
+static inline int wasmtime_mariadb_file_fstat(int fd, struct stat *st) {
+  int64_t size = 0;
+  int64_t blocks = 0;
+  int64_t block_size = 4096;
+  int64_t dev = 1;
+  int64_t atime = 0;
+  int64_t mtime = 0;
+  int64_t ctime = 0;
+  int32_t mode = S_IFREG | 0600;
+  int rc = wasmtime_mariadb_file_decode_i32(
+      wasmtime_mariadb_host_file_fstat(fd, &size, &blocks, &block_size, &dev,
+                                       &mode, &atime, &mtime, &ctime));
+
+  if (rc != 0) {
+    return rc;
+  }
+
+  memset(st, 0, sizeof(*st));
+  st->st_dev = (dev_t)dev;
+  st->st_nlink = 1;
+  st->st_mode = (mode_t)mode;
+  st->st_size = (off_t)size;
+  st->st_blksize = (blksize_t)block_size;
+  st->st_blocks = (blkcnt_t)blocks;
+  st->st_atime = (time_t)atime;
+  st->st_mtime = (time_t)mtime;
+  st->st_ctime = (time_t)ctime;
+  return 0;
 }
 
 #endif /* __wasi__ */

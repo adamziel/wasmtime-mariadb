@@ -159,7 +159,16 @@ patch_mariadb_source() {
   perl -0pi -e '
     s/(#include <mysys_err.h>\n)/$1#if defined(__wasi__)\n#undef MAP_HUGETLB\n#undef MAP_HUGE_SHIFT\n#ifndef MAP_ANONYMOUS\n#define MAP_ANONYMOUS 0x20\n#endif\n#endif\n/;
     s/(#endif \/\* HAVE_MMAP && !_WIN32 \*\/)/$1\n#if defined(__wasi__) && !defined(OS_MAP_ANON)\n#define OS_MAP_ANON MAP_ANONYMOUS\n#endif/;
+    s/(  DBUG_ENTER\("my_large_malloc"\);\n)/$1#if defined(__wasi__)\n  DBUG_RETURN(my_malloc_lock(*size, MYF(my_flags | MY_ZEROFILL)));\n#endif\n/s;
+    s/(  DBUG_ENTER\("my_large_virtual_alloc"\);\n)/$1#if defined(__wasi__)\n  DBUG_RETURN((char*) my_malloc_lock(*size, MYF(MY_ZEROFILL | MY_WME)));\n#endif\n/s;
+    s/(  DBUG_ENTER\("my_large_free"\);\n)/$1#if defined(__wasi__)\n  my_free_lock(ptr);\n  DBUG_VOID_RETURN;\n#endif\n/s;
   ' "$src/mysys/my_largepage.c"
+
+  perl -0pi -e '
+    s/(  DBUG_ASSERT\(ptr\);\n)/$1#if defined(__wasi__)\n  (void) size;\n  return ptr;\n#endif\n/s;
+    s/(void my_virtual_mem_decommit\(char \*ptr, size_t size\)\n\{\n)/$1#if defined(__wasi__)\n  memset(ptr, 0, size);\n  return;\n#endif\n/s;
+    s/(void my_virtual_mem_release\(char \*ptr, size_t size\)\n\{\n)/$1#if defined(__wasi__)\n  (void) size;\n  my_free_lock(ptr);\n  return;\n#endif\n/s;
+  ' "$src/mysys/my_virtual_mem.c"
 
   perl -0pi -e '
     s/(  DBUG_PRINT\("my",\("fd: %d  Op: %d  start: %ld  Length: %ld  MyFlags: %lu",\n\s+fd,locktype,\(long\) start,\(long\) length,MyFlags\)\);\n)/$1#if defined(__wasi__)\n  DBUG_RETURN(0);\n#endif\n/s;
@@ -176,6 +185,49 @@ patch_mariadb_source() {
   perl -0pi -e '
     s/(ENDIF\(\)\nENDIF\(\)\n\n)(CHECK_CXX_SOURCE_COMPILES\("\n#include <pthread.h>)/$1IF(CMAKE_SYSTEM_NAME STREQUAL "WASI")\n  SET(SOCKET_SIZE_TYPE socklen_t)\nENDIF()\n\n$2/s;
   ' "$src/configure.cmake"
+
+  perl -0pi -e '
+    s/(#include "tpool\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
+    s/(  switch \(cb->m_opcode\)\n  \{\n  case aio_opcode::AIO_PREAD:\n    ret_len= pread\(cb->m_fh, cb->m_buffer, cb->m_len, cb->m_offset\);\n    break;\n  case aio_opcode::AIO_PWRITE:\n    ret_len= pwrite\(cb->m_fh, cb->m_buffer, cb->m_len, cb->m_offset\);\n    break;\n)/#if defined(__wasi__)\n  switch (cb->m_opcode)\n  {\n  case aio_opcode::AIO_PREAD:\n    ret_len= wasmtime_mariadb_file_pread(cb->m_fh, cb->m_buffer, cb->m_len,\n                                         cb->m_offset);\n    break;\n  case aio_opcode::AIO_PWRITE:\n    ret_len= wasmtime_mariadb_file_pwrite(cb->m_fh, cb->m_buffer, cb->m_len,\n                                          cb->m_offset);\n    break;\n#else\n$1#endif\n/s;
+  ' "$src/tpool/tpool_generic.cc"
+
+  perl -0pi -e '
+    s/(#include "os0file\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
+    s/(  if \(request\.is_read\(\)\)\n    return IF_WIN\(tpool::pread\(m_fh, m_buf, n, m_offset\), pread\(m_fh, m_buf, n, m_offset\)\);\n  return IF_WIN\(tpool::pwrite\(m_fh, m_buf, n, m_offset\), pwrite\(m_fh, m_buf, n, m_offset\)\);\n)/#if defined(__wasi__)\n  if (request.is_read())\n    return wasmtime_mariadb_file_pread(m_fh, m_buf, n, m_offset);\n  return wasmtime_mariadb_file_pwrite(m_fh, m_buf, n, m_offset);\n#else\n$1#endif\n/s;
+    s/(static int os_file_sync_posix\(os_file_t file\) noexcept\n\{\n)/$1#if defined(__wasi__)\n  auto func= [](os_file_t fd) { return wasmtime_mariadb_file_sync(fd, 1); };\n  auto func_name= "fdatasync()";\n#else\n/s;
+    s/(#else\n  auto func= fdatasync;\n  auto func_name= "fdatasync\(\)";\n#endif\n)/$1#endif\n/s;
+    s/file = open\(name, create_flag \| direct_flag, my_umask\);/file = wasmtime_mariadb_file_open(\n\t\t\tname, create_flag | direct_flag, my_umask);/g;
+    s/file = open\(name, create_flag, my_umask\);/file = wasmtime_mariadb_file_open(name, create_flag, my_umask);/g;
+    s/int f= open\(b, O_RDONLY\);/int f= wasmtime_mariadb_file_open(b, O_RDONLY);/g;
+    s/f= open\(b, O_RDONLY\);/f= wasmtime_mariadb_file_open(b, O_RDONLY);/g;
+    s/ssize_t l= read\(f, b, sizeof b\);/ssize_t l= wasmtime_mariadb_file_read(f, b, sizeof b);/g;
+    s/\bclose\(file\);/wasmtime_mariadb_file_close(file);/g;
+    s/\bclose\(f\);/wasmtime_mariadb_file_close(f);/g;
+    s/int ret= close\(file\);/int ret= wasmtime_mariadb_file_close(file);/g;
+    s/return lseek\(file, 0, SEEK_END\);/return wasmtime_mariadb_file_seek(file, 0, SEEK_END);/g;
+    s/int\s+res = ftruncate\(file, size\);/int\tres = wasmtime_mariadb_file_truncate(file, size);/g;
+    s/return\(!ftruncate\(fileno\(file\), ftell\(file\)\)\);/return(!wasmtime_mariadb_file_truncate(fileno(file), ftell(file)));/g;
+    s/bool success = !ftruncate\(file, size\);/bool success = !wasmtime_mariadb_file_truncate(file, size);/g;
+    s/if \(fstat\(file, &st\) \|\| !os_file_log_maybe_unbuffered\(st\)\)/if (wasmtime_mariadb_file_fstat(file, \&st) || !os_file_log_maybe_unbuffered(st))/g;
+    s/if \(!fstat\(file, &statbuf\)\)/if (!wasmtime_mariadb_file_fstat(file, \&statbuf))/g;
+    s/(int os_file_lock\(int fd, const char \*name\) noexcept\n\{\n)/$1#if defined(__wasi__)\n\t(void) fd;\n\t(void) name;\n\treturn 0;\n#endif\n/s;
+  ' "$src/storage/innobase/os/os0file.cc"
+
+  perl -0pi -e '
+    s/(#include "log0log\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
+    s/(    s= IF_WIN\(tpool::pread\(m_file, data, size, offset\),\n              pread\(m_file, data, size, offset\)\);\n)/#if defined(__wasi__)\n    s= wasmtime_mariadb_file_pread(m_file, data, size, offset);\n#else\n$1#endif\n/s;
+    s/(    s= IF_WIN\(tpool::pwrite\(m_file, data, size, offset\),\n              pwrite\(m_file, data, size, offset\)\);\n)/#if defined(__wasi__)\n    s= wasmtime_mariadb_file_pwrite(m_file, data, size, offset);\n#else\n$1#endif\n/s;
+    s/if \(!fstat\(file, &st\)\)/if (!wasmtime_mariadb_file_fstat(file, \&st))/g;
+  ' "$src/storage/innobase/log/log0log.cc"
+
+  perl -0pi -e '
+    s/(  if \(opt_bin_log\)\n    return &mysql_bin_log;\n)/#if defined(__wasi__)\n  if (!opt_bin_log)\n    return \&tc_log_dummy;\n#endif\n$1/s;
+  ' "$src/sql/log.h"
+
+  perl -0pi -e '
+    s/(#include "os0file\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
+    s/fstat\(m_handle, &m_file_info\);/wasmtime_mariadb_file_fstat(m_handle, \&m_file_info);/g;
+  ' "$src/storage/innobase/fsp/fsp0file.cc"
 }
 
 patch_mariadb_source "$src_dir"
@@ -207,7 +259,7 @@ if ! docker run --rm \
       -DWITHOUT_SERVER=OFF \
       -DWITH_EMBEDDED_SERVER=OFF \
       -DWITH_WSREP=OFF \
-      -DPLUGIN_INNOBASE=NO \
+      -DPLUGIN_INNOBASE=STATIC \
       -DPLUGIN_ROCKSDB=NO \
       -DPLUGIN_MROONGA=NO \
       -DPLUGIN_TOKUDB=NO \
@@ -298,7 +350,7 @@ if ! docker run --rm \
       -DWITH_EMBEDDED_SERVER=OFF \
       -DWITH_WSREP=OFF \
       -DDISABLE_THREADPOOL=ON \
-      -DPLUGIN_INNOBASE=NO \
+      -DPLUGIN_INNOBASE=STATIC \
       -DPLUGIN_ROCKSDB=NO \
       -DPLUGIN_MROONGA=NO \
       -DPLUGIN_TOKUDB=NO \
