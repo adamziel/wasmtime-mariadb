@@ -2,7 +2,13 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="${BIN:-$root/target/release/wasmtime-mariadb}"
+if [[ -n "${BIN:-}" ]]; then
+  bin="$BIN"
+elif [[ -x "$root/wasmtime-mariadb" ]]; then
+  bin="$root/wasmtime-mariadb"
+else
+  bin="$root/target/release/wasmtime-mariadb"
+fi
 run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
 

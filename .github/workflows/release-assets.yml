@@ -1,0 +1,81 @@
+name: release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.1
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  macos-aarch64:
+    name: Build macos-aarch64
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Download MariaDB wasm release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-input
+          gh release download "${{ inputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "mariadbd-wasm.tar.gz" \
+            --dir release-input
+          tar -xzf release-input/mariadbd-wasm.tar.gz -C release-input
+
+      - name: Build native runner
+        run: |
+          rustup target add aarch64-apple-darwin
+          MARIADBD_WASM="$PWD/release-input/mariadbd" \
+            cargo build --release --target aarch64-apple-darwin
+
+      - name: Smoke test server over TCP
+        run: |
+          set -euo pipefail
+          export BIN="$PWD/target/aarch64-apple-darwin/release/wasmtime-mariadb"
+          export RUN_DIR="$RUNNER_TEMP/wasmtime-mariadb-run"
+          export PORT=3320
+          ./scripts/run-server.sh >"$RUNNER_TEMP/server.stdout" 2>"$RUNNER_TEMP/server.stderr" &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for i in $(seq 1 60); do
+            if grep -q 'ready for connections' "$RUN_DIR/mariadbd-runtime.err" 2>/dev/null; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$RUN_DIR/mariadbd-runtime.err" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+          grep -q 'ready for connections' "$RUN_DIR/mariadbd-runtime.err"
+          python3 scripts/bench-tcp.py --host 127.0.0.1 --port "$PORT" --user root --clients 1 --rows 5 --batch-size 5
+
+      - name: Package
+        run: |
+          ./scripts/package-release.sh \
+            "${{ inputs.tag }}" \
+            macos-aarch64 \
+            target/aarch64-apple-darwin/release/wasmtime-mariadb
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            dist/wasmtime-mariadb-macos-aarch64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

@@ -10,10 +10,40 @@ listen on TCP, accept normal MySQL/MariaDB clients, and run basic SQL against
 
 ## Requirements
 
-- Rust toolchain
-- Docker, for the WASI SDK build scripts
+- For release binaries: macOS Apple Silicon or Linux x86_64
+- For building from source: Rust toolchain and Docker
 - Optional: a local `mysql` or `mariadb` CLI for manual connections
 - Python 3, only for the included dependency-free benchmark client
+
+## Quick Start On Mac M4
+
+This downloads the latest Apple Silicon release, verifies `SHA256SUMS`,
+extracts it, and starts MariaDB on `127.0.0.1:3307`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.sh | bash -s -- --run --port 3307
+```
+
+The server runs in the foreground. From another terminal, connect with a
+`mysql` client:
+
+```sh
+cd wasmtime-mariadb-*-macos-aarch64
+PORT=3307 ./scripts/test-mysql-client.sh
+```
+
+If macOS blocks the unsigned binary, remove quarantine and start it again:
+
+```sh
+xattr -d com.apple.quarantine ./wasmtime-mariadb 2>/dev/null || true
+PORT=3307 ./scripts/run-server.sh
+```
+
+To only download and extract without starting the server:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.sh | bash
+```
 
 ## Build
 
@@ -95,6 +125,25 @@ database client libraries:
 
 ```sh
 python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5
+```
+
+The packaged mysql-client smoke script runs `SELECT VERSION()`, creates a
+`MEMORY` table, inserts one row, and verifies `COUNT(*)`:
+
+```sh
+PORT=3307 ./scripts/test-mysql-client.sh
+```
+
+On Apple Silicon Macs with Homebrew, install a client with:
+
+```sh
+brew install mysql-client
+```
+
+If Homebrew does not put `mysql` on `PATH`, run:
+
+```sh
+MYSQL=/opt/homebrew/opt/mysql-client/bin/mysql PORT=3307 ./scripts/test-mysql-client.sh
 ```
 
 ## Benchmark
