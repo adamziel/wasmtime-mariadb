@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 use wasmtime::{Caller, Linker, Result};
@@ -397,6 +399,43 @@ impl HostFiles {
         }
     }
 
+    fn lock_exclusive(&self, fd: i32) -> i32 {
+        #[cfg(unix)]
+        {
+            let inner = self.inner.lock().unwrap();
+            let Some(host_file) = inner.files.get(&fd) else {
+                return neg_errno(libc::EBADF);
+            };
+
+            let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+            lock.l_type = libc::F_WRLCK as _;
+            lock.l_whence = libc::SEEK_SET as _;
+            lock.l_start = 0;
+            lock.l_len = 0;
+
+            let result = unsafe { libc::fcntl(host_file.file.as_raw_fd(), libc::F_SETLK, &lock) };
+            if result == 0 {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} rc=0",
+                    host_file.path.display()
+                ));
+                0
+            } else {
+                let errno = io_errno(std::io::Error::last_os_error());
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={errno}",
+                    host_file.path.display()
+                ));
+                neg_errno(errno)
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fd;
+            neg_errno(libc::ENOTSUP)
+        }
+    }
+
     fn fstat(&self, fd: i32) -> std::result::Result<HostFileStat, i32> {
         #[cfg(unix)]
         {
@@ -562,6 +601,12 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         |caller: Caller<'_, AppState>, fd: i32, data_only: i32| -> i32 {
             caller.data().files.sync(fd, data_only != 0)
         },
+    )?;
+
+    linker.func_wrap(
+        MODULE_NAME,
+        "lock_exclusive",
+        |caller: Caller<'_, AppState>, fd: i32| -> i32 { caller.data().files.lock_exclusive(fd) },
     )?;
 
     linker.func_wrap(

@@ -410,12 +410,9 @@ stop_server_for_mtr_restart() {
   fi
 
   for _ in $(seq 1 50); do
-    if ! port_is_listening "$server_port"; then
+    if ! port_is_listening "$server_port" && \
+       { [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; }; then
       return 0
-    fi
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      sleep 0.1
-      continue
     fi
     sleep 0.1
   done
@@ -424,18 +421,18 @@ stop_server_for_mtr_restart() {
     kill "$pid" >>"$watcher_log" 2>&1 || true
   fi
   for _ in $(seq 1 50); do
-    if ! port_is_listening "$server_port"; then
+    if ! port_is_listening "$server_port" && \
+       { [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; }; then
       return 0
-    fi
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      sleep 0.1
-      continue
     fi
     sleep 0.1
   done
 
   if [[ -n "$pid" ]]; then
     kill -KILL "$pid" >>"$watcher_log" 2>&1 || true
+  fi
+  if [[ -n "$pid" ]]; then
+    wait "$pid" 2>/dev/null || true
   fi
 }
 

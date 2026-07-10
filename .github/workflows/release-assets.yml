@@ -90,6 +90,11 @@ jobs:
             dump_logs
             exit 1
           }
+          OUT_DIR="$RUNNER_TEMP/durability" PORT=3322 MYSQL=mariadb \
+            ./scripts/test-durability-recovery.sh || {
+              dump_logs
+              exit 1
+            }
 
       - name: Package
         run: |
@@ -185,6 +190,13 @@ jobs:
             dump_logs
             exit 1
           }
+          OUT_DIR="$RUNNER_TEMP/durability" PORT=3322 \
+            MYSQL="$(brew --prefix mysql-client)/bin/mysql" \
+            MYSQL_ADMIN="$(brew --prefix mysql-client)/bin/mysqladmin" \
+            ./scripts/test-durability-recovery.sh || {
+              dump_logs
+              exit 1
+            }
 
       - name: Package
         run: |

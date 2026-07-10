@@ -24,6 +24,7 @@ cp scripts/bench-tcp.py "$out_dir/$name/scripts/"
 cp scripts/mariadb-system-tables.sql "$out_dir/$name/scripts/"
 cp scripts/run-60k-transaction-workload.sh "$out_dir/$name/scripts/"
 cp scripts/run-server.sh "$out_dir/$name/scripts/"
+cp scripts/test-durability-recovery.sh "$out_dir/$name/scripts/"
 cp scripts/test-mysql-client.sh "$out_dir/$name/scripts/"
 cp scripts/test-wordpress-local-dev.sh "$out_dir/$name/scripts/"
 chmod +x \
@@ -31,6 +32,7 @@ chmod +x \
   "$out_dir/$name/scripts/bench-tcp.py" \
   "$out_dir/$name/scripts/run-60k-transaction-workload.sh" \
   "$out_dir/$name/scripts/run-server.sh" \
+  "$out_dir/$name/scripts/test-durability-recovery.sh" \
   "$out_dir/$name/scripts/test-mysql-client.sh" \
   "$out_dir/$name/scripts/test-wordpress-local-dev.sh"
 

@@ -35,6 +35,9 @@ __attribute__((
 int32_t wasmtime_mariadb_host_file_truncate(int32_t fd, int64_t size);
 __attribute__((import_module("wasmtime_mariadb_files"), import_name("sync")))
 int32_t wasmtime_mariadb_host_file_sync(int32_t fd, int32_t data_only);
+__attribute__((import_module("wasmtime_mariadb_files"),
+               import_name("lock_exclusive")))
+int32_t wasmtime_mariadb_host_file_lock_exclusive(int32_t fd);
 __attribute__((import_module("wasmtime_mariadb_files"), import_name("fstat")))
 int32_t wasmtime_mariadb_host_file_fstat(
     int32_t fd, int64_t *size, int64_t *blocks, int64_t *block_size,
@@ -177,6 +180,11 @@ static inline int wasmtime_mariadb_file_truncate(int fd, off_t size) {
 static inline int wasmtime_mariadb_file_sync(int fd, int data_only) {
   return wasmtime_mariadb_file_decode_i32(
       wasmtime_mariadb_host_file_sync(fd, data_only));
+}
+
+static inline int wasmtime_mariadb_file_lock_exclusive(int fd) {
+  return wasmtime_mariadb_file_decode_i32(
+      wasmtime_mariadb_host_file_lock_exclusive(fd));
 }
 
 static inline int wasmtime_mariadb_file_fill_stat(

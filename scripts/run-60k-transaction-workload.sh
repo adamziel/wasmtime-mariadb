@@ -8,6 +8,7 @@ clients="${SLAP_CLIENTS:-4}"
 queries_per_client="${SLAP_QUERIES_PER_CLIENT:-15000}"
 commit_every="${SLAP_COMMIT_EVERY:-20}"
 seed_rows="${SLAP_SEED_ROWS:-1000}"
+durability="${DURABILITY:-strict}"
 run_dir="$out_dir/server"
 
 for value in "$port" "$clients" "$queries_per_client" "$commit_every" "$seed_rows"; do
@@ -36,7 +37,7 @@ fi
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 
-RUN_DIR="$run_dir" PORT="$port" "$root/scripts/run-server.sh" \
+DURABILITY="$durability" RUN_DIR="$run_dir" PORT="$port" "$root/scripts/run-server.sh" \
   --general-log \
   --general-log-file=/tmp/general.log \
   >"$out_dir/server.stdout" 2>"$out_dir/server.stderr" &
@@ -90,6 +91,7 @@ autocommit_off="$(awk 'BEGIN { IGNORECASE=1 } /[[:space:]]Query[[:space:]]+SET[[
 workload_queries=$((clients * queries_per_client))
 
 printf '%s\n' \
+  "durability=$durability" \
   "clients=$clients" \
   "queries_per_client=$queries_per_client" \
   "requested_workload_queries=$workload_queries" \

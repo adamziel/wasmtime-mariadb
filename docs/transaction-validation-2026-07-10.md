@@ -2,7 +2,9 @@
 
 This note separates throughput from transactional correctness for the
 Wasmtime-hosted MariaDB prototype. Neither signal is a production durability
-certification.
+certification. Strict process-crash validation and current strict-versus-
+relaxed measurements are recorded separately in
+[`durability-validation-2026-07-10.md`](durability-validation-2026-07-10.md).
 
 ## MTR in this context
 
@@ -56,7 +58,7 @@ The run fails if the server general log contains fewer than the requested
 60,000 `Query` commands. It requires the local `mariadb-admin` client and
 either `mariadb-slap` or `mysqlslap`.
 
-The Linux x86_64 workspace result was:
+The earlier unsynced Linux x86_64 workspace result was:
 
 | Measurement | Result |
 | --- | ---: |
@@ -71,7 +73,13 @@ The Linux x86_64 workspace result was:
 
 The extra logged commands are schema/setup and connection-control statements.
 This is a mixed `SELECT`/`INSERT` workload, not a benchmark of every query
-shape or a durability claim; the runner uses `--debug-no-sync`.
+shape. It was captured before strict mode became the default, when the runner
+used `--debug-no-sync`; do not use it as a durable-mode performance number.
+
+The current completed 60k measurements recorded the same 64,012 query
+commands and 3,004 commits in 162.673 seconds with strict durability and
+88.705 seconds in explicit relaxed mode. See the durability note for commands,
+host details, and the process-crash test.
 
 ## Fixes found by discovery
 

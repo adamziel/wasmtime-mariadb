@@ -19,9 +19,10 @@ The documented path is deliberately narrow:
 - macOS Apple Silicon or Linux x86_64 release binaries.
 - Root access with `--skip-grant-tables`; there is no authentication setup.
 
-The release does not claim support for production durability, replication,
-binary logging, TLS, backup tooling, plugins, performance schema, or normal
-privilege management. Those are different projects, not missing README flags.
+The release validates strict InnoDB process-crash recovery on the tested local
+path. It does not claim production power-loss durability, replication, binary
+logging, TLS, backup tooling, plugins, performance schema, or normal privilege
+management. Those are different projects, not missing README flags.
 
 ## Requirements
 
@@ -31,6 +32,7 @@ privilege management. Those are different projects, not missing README flags.
 | Connect or run smoke tests | `mysql` or `mariadb` client |
 | TCP benchmark | Python 3 |
 | 60k transaction workload | `mariadb-admin` plus `mariadb-slap` or `mysqlslap` |
+| Crash-recovery acceptance test | `mysql`/`mariadb` plus `mysqladmin`/`mariadb-admin` |
 | Build the Wasm server | Docker, Rust, and enough disk for the MariaDB/OpenSSL builds |
 | Run MTR profiles | MariaDB source tree, MariaDB test/client tools, a C++ compiler, Python 3 |
 | Run WordPress/WooCommerce integration | PHP, WordPress test library, WooCommerce checkout, PHPUnit dependencies |
@@ -70,7 +72,7 @@ mean tomorrow:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.sh \
-  | bash -s -- --version v0.1.10
+  | bash -s -- --version v0.1.11
 ```
 
 ### Run the extracted release
@@ -78,14 +80,14 @@ curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scri
 The installer prints this command. Run it separately, in a real terminal:
 
 ```sh
-cd wasmtime-mariadb-v0.1.10-macos-aarch64
+cd wasmtime-mariadb-v0.1.11-macos-aarch64
 PORT=3307 ./scripts/run-server.sh
 ```
 
-Use `wasmtime-mariadb-v0.1.10-linux-x86_64` on Linux. The release archive
+Use `wasmtime-mariadb-v0.1.11-linux-x86_64` on Linux. The release archive
 contains the runner, server helpers, smoke tests, the Python benchmark, the
-60k workload, and validation docs. It does not contain the MariaDB source tree
-or the MTR harness.
+60k workload, the durability-recovery test, and validation docs. It does not
+contain the MariaDB source tree or the MTR harness.
 
 ### macOS quarantine
 
@@ -93,7 +95,7 @@ The binary is unsigned. macOS may quarantine it. Remove the quarantine bit
 from the extracted directory before starting it:
 
 ```sh
-xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.10-macos-aarch64
+xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.11-macos-aarch64
 ```
 
 ## Run Methods
@@ -110,13 +112,48 @@ The server runs in the foreground. Stop it with `Ctrl-C` only after it has
 reported `ready for connections`. The default run directory is `build/run`;
 use an explicit `RUN_DIR` when you want predictable data placement. The helper
 streams `RUN_DIR/mariadbd-runtime.err`, so first-start InnoDB initialization is
-visible instead of looking stuck. It can take up to a minute.
+visible instead of looking stuck. It can take up to a minute. `Ctrl-C` is an
+abrupt host stop, not a graceful MariaDB `COM_SHUTDOWN`; strict mode is tested
+to recover committed InnoDB work after that kind of stop.
 
 Do not use `Ctrl-C` as an initialization retry loop. An interruption before
 readiness can leave a partial local data directory. The helper identifies the
 common incomplete-bootstrap state and prints the exact `rm -rf RUN_DIR`
 command needed for a disposable clean retry. On any other nonzero exit it
 prints the last 80 runtime-log lines.
+
+### Durability and data-directory locking
+
+`DURABILITY=strict` is the default. It sets
+`innodb_flush_log_at_trx_commit=1` and leaves MariaDB's sync calls enabled.
+The WASI file bridge maps InnoDB `fdatasync`/`fsync` calls to the host file
+descriptor's `sync_data`/`sync_all` calls. This is the only mode for a local
+site whose data you intend to keep.
+
+```sh
+DURABILITY=strict RUN_DIR="$PWD/build/site-db" PORT=3307 ./scripts/run-server.sh
+```
+
+`DURABILITY=relaxed` is for disposable benchmarks only. It restores
+`--debug-no-sync` and changes InnoDB to flush its log every second. It is
+faster because it deliberately weakens crash durability.
+
+The helper holds an exclusive advisory lock at
+`RUN_DIR/.wasmtime-mariadb.lock` for its lifetime. Starting a second helper
+against the same `RUN_DIR` fails before MariaDB opens the data files. InnoDB
+also acquires host `F_SETLK` locks on its files. Do not bypass the helper with a
+raw runner invocation unless you pass an equivalent `--lock-file` yourself.
+
+The checked process-crash contract is narrower than marketing-grade
+durability: acknowledged InnoDB commits survived a `SIGKILL` and restart on
+the tested host filesystem. A physical power cut, a lying storage controller,
+and network filesystems are not covered by that test.
+
+Run the acceptance test with a disposable directory:
+
+```sh
+OUT_DIR=build/durability-recovery ./scripts/test-durability-recovery.sh
+```
 
 ### Different port or data directory
 
@@ -142,8 +179,10 @@ RUN_DIR="$PWD/build/trace-db" PORT=3307 \
   ./scripts/run-server.sh --general-log --general-log-file=/tmp/general.log
 ```
 
-Do not override the helper's datadir, tmpdir, port, or system-table bootstrap
-unless you understand the host/guest path mapping described below.
+Do not override the helper's datadir, tmpdir, port, system-table bootstrap, or
+durability settings unless you understand the host/guest path mapping described
+below. In strict mode, the helper applies its commit-flush setting after these
+arguments and rejects `--debug-no-sync`.
 
 ### Host-runner options
 
@@ -236,17 +275,17 @@ Useful options:
 | `--batch-size` | `50` | Rows per `INSERT` |
 | `--engine` | `InnoDB` | Table engine; `MEMORY` is only a smoke comparison |
 
-Recent Linux x86_64 result, using the release runner and default local
-settings:
+These are protocol and InnoDB smoke measurements, not a durability benchmark.
+They are sensitive to host page cache and batch size. Use the measured
+transaction workload below when commit durability matters.
+
+Earlier Linux x86_64 smoke results, kept only as a rough protocol baseline:
 
 | Clients | Rows/client | Inserted rows | Counted rows | Elapsed | Rows/sec |
 | ---: | ---: | ---: | ---: | ---: |
 | 1 | 5 | 5 | 5 | 0.002 s | 2,900 |
 | 1 | 2,000 | 2,000 | 2,000 | 0.009 s | 215,185 |
 | 4 | 500 | 2,000 | 2,000 | 0.006 s | 322,836 |
-
-This is a protocol and InnoDB smoke benchmark. It uses `--debug-no-sync`.
-It is not a durability benchmark and should not be marketed as one.
 
 ### Measured 60k transaction workload
 
@@ -273,12 +312,24 @@ Configuration is through environment variables:
 | `SLAP_QUERIES_PER_CLIENT` | `15000` |
 | `SLAP_COMMIT_EVERY` | `20` |
 | `SLAP_SEED_ROWS` | `1000` |
+| `DURABILITY` | `strict` |
 | `MARIADB_SLAP` | auto-detect `mariadb-slap`, then `mysqlslap` |
 
-The validated run issued 60,000 requested workload statements and recorded
-64,012 `Query` commands, including 3,004 `COMMIT`s, in 87.300 seconds of
-client time. The complete result and caveats are in
-[`docs/transaction-validation-2026-07-10.md`](docs/transaction-validation-2026-07-10.md).
+Current Linux x86_64 workspace measurements used an 8-core AMD Ryzen AI MAX+
+395 host on ext4. Each completed run recorded 64,012 `Query` commands,
+including 3,004 `COMMIT`s:
+
+| Workload | Durability | Client time | Relative to relaxed |
+| --- | --- | ---: | ---: |
+| 4 clients, 60k mixed statements, commit every 20 | `strict` | 162.673 s | 1.83x |
+| 4 clients, 60k mixed statements, commit every 20 | `relaxed` | 88.705 s | 1.00x |
+| 1 client, 2k mixed statements, commit every statement (2,001 commits) | `strict` | 3.008 s | 2.57x |
+| 1 client, 2k mixed statements, commit every statement (2,001 commits) | `relaxed` | 1.170 s | 1.00x |
+
+`relaxed` is not a valid comparison point for retained local data. It exists
+to show the sync cost, not to justify turning sync off. The complete process
+crash test and benchmark notes are in
+[`docs/durability-validation-2026-07-10.md`](docs/durability-validation-2026-07-10.md).
 
 ## Build Methods
 
@@ -328,6 +379,17 @@ cargo check --features dev-fixture
 ```
 
 These verify the Rust host plumbing. They do not prove that MariaDB runs.
+
+### Strict crash recovery
+
+```sh
+OUT_DIR=build/durability-recovery ./scripts/test-durability-recovery.sh
+```
+
+This starts a real strict server, rejects a second server on the same data
+directory, verifies host file-lock and sync calls, kills the native host, and
+checks committed-versus-uncommitted InnoDB rows after restart. It is a
+process-crash test, not a power-loss test.
 
 ### Direct external MTR
 
@@ -428,12 +490,17 @@ hand is debugging, not a supported deployment method.
 - The normal runner uses `--skip-grant-tables`. There is no real user/password
   setup or privilege-table support.
 - It binds loopback in the documented command. Do not expose it to a network.
-- File locking is a no-op under WASI. The no-binlog transaction coordinator
-  uses MariaDB's dummy coordinator rather than the mmap-backed TC log.
-- `--debug-no-sync` is intentional for local development. It makes durability
-  claims meaningless.
-- MTR exercises XA statements, but crash recovery, prepared-XA recovery,
-  replication, binlog, backup, and production durability are not validated.
+- The normal helper has a host run-directory lock and InnoDB now calls host
+  `F_SETLK` locks. MyISAM/Aria-style external table locking is still disabled
+  with `--skip-external-locking`; this runner claims InnoDB local development,
+  not shared non-InnoDB data directories.
+- Strict mode has a process-crash recovery test, not a physical power-loss
+  certification. Storage-controller behavior, network filesystems, prepared
+  XA recovery, replication, binlog, backup, and production durability remain
+  unvalidated.
+- MariaDB `COM_SHUTDOWN` does not reliably terminate the Wasmtime host yet.
+  `Ctrl-C` uses the abrupt stop path and strict mode recovers it; do not treat
+  it as a clean checkpoint/shutdown API.
 - TLS, dynamic plugins, performance schema, OS signals, and normal auth are
   disabled or unsupported in the documented runtime.
 - `idle_transaction_timeout` does not disconnect an idle transaction as the
@@ -512,6 +579,20 @@ bridges the missing operating-system interfaces.
 through configured preopens and keeps a separate guest file-descriptor table.
 The file and socket shims are why this is a host plus a Wasm module, not a
 random command line wrapped around `wasmtime`.
+
+InnoDB row locks, transaction locks, MVCC, deadlock detection, and isolation
+live inside MariaDB's shared guest memory. They were always real and are what
+the concurrent MTR and 60k workloads exercised. That is unrelated to OS file
+locking: file locks stop two server *processes* from opening the same data
+directory. The old WASI port returned success from that file-lock call. The
+current port routes InnoDB's whole-file lock through `HostFiles` to host
+`F_SETLK`, while `run-server.sh` also holds a separate `flock` lock on the run
+directory before MariaDB starts. The two layers cover different failures.
+
+In strict mode, the same file bridge routes InnoDB `fdatasync` and `fsync`
+calls to the host filesystem. In relaxed mode, MariaDB's `--debug-no-sync`
+deliberately bypasses that work. This is a configuration choice, not a claim
+that Wasm has magically become a database filesystem.
 
 ### Thread and memory model
 

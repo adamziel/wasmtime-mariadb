@@ -11,6 +11,7 @@ else
 fi
 run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
+durability="${DURABILITY:-strict}"
 system_tables_source="$root/scripts/mariadb-system-tables.sql"
 extra_runner_args=()
 if [[ -n "${RUNNER_ARGS:-}" ]]; then
@@ -23,6 +24,32 @@ fi
 init_args=(--init-file=/tmp/mariadb-system-tables.sql)
 if [[ "${SKIP_SYSTEM_TABLES_INIT:-0}" == "1" ]]; then
   init_args=()
+fi
+durability_args=()
+case "$durability" in
+  strict)
+    # Default: acknowledged InnoDB commits reach the host fdatasync bridge.
+    durability_args+=(--innodb-flush-log-at-trx-commit=1)
+    ;;
+  relaxed)
+    # Benchmark-only escape hatch. It deliberately weakens crash durability.
+    durability_args+=(--debug-no-sync --innodb-flush-log-at-trx-commit=2)
+    ;;
+  *)
+    echo "DURABILITY must be strict or relaxed, got: $durability" >&2
+    exit 2
+    ;;
+esac
+if [[ "$durability" == "strict" ]]; then
+  for server_arg in "$@"; do
+    case "$server_arg" in
+      --debug-no-sync|--debug-no-sync=*)
+        echo "DURABILITY=strict cannot be combined with $server_arg" >&2
+        echo "Use DURABILITY=relaxed only for disposable benchmarks." >&2
+        exit 2
+        ;;
+    esac
+  done
 fi
 
 if [[ ! -x "$bin" ]]; then
@@ -39,6 +66,12 @@ mkdir -p "$run_dir/tmp" "$run_dir/data"
 run_dir="$(cd "$run_dir" && pwd)"
 system_tables_init="$run_dir/mariadb-system-tables.sql"
 runtime_log="$run_dir/mariadbd-runtime.err"
+host_pid_file="${HOST_PID_FILE:-}"
+if [[ -n "$host_pid_file" ]]; then
+  host_pid_dir="$(dirname "$host_pid_file")"
+  mkdir -p "$host_pid_dir"
+  host_pid_file="$(cd "$host_pid_dir" && pwd)/$(basename "$host_pid_file")"
+fi
 
 if [[ "${SKIP_SYSTEM_TABLES_INIT:-0}" != "1" && -e "$run_dir/data/ibdata1" ]]; then
   if [[ ! -e "$run_dir/data/mysql/servers.frm" || \
@@ -75,6 +108,7 @@ The first startup can take up to a minute. Do not interrupt it; wait for
 EOF
 fi
 echo "MariaDB runtime log: $runtime_log"
+echo "MariaDB durability mode: $durability"
 
 # The current file shim does not track guest chdir(), and MariaDB uses relative
 # paths after selecting its datadir. Run from the host datadir until chdir is
@@ -85,6 +119,7 @@ cd "$run_dir/data"
 set +u
 "$bin" \
   --no-inherit-env \
+  --lock-file "$run_dir/.wasmtime-mariadb.lock" \
   --preopen "$run_dir=/tmp" \
   --env TMPDIR=/tmp/tmp \
   --env HOME=/tmp \
@@ -94,7 +129,7 @@ set +u
   --console \
   "${grant_args[@]}" \
   --skip-external-locking \
-  --debug-no-sync \
+  "${durability_args[@]}" \
   --skip-ssl \
   --basedir=/tmp \
   --datadir=/tmp/data \
@@ -110,9 +145,20 @@ set +u
   --innodb-buffer-pool-size-max=16M \
   --innodb-log-file-size=8M \
   --innodb-log-buffer-size=4M \
-  "$@" &
+  "$@" \
+  "${durability_args[@]}" &
 server_pid=$!
 set -u
+
+if [[ -n "$host_pid_file" ]]; then
+  printf '%s\n' "$server_pid" > "$host_pid_file"
+fi
+
+remove_host_pid_file() {
+  if [[ -n "$host_pid_file" ]]; then
+    rm -f "$host_pid_file"
+  fi
+}
 
 tail_pid=""
 stop_log_stream() {
@@ -139,6 +185,7 @@ forward_signal() {
   fi
   wait "$server_pid" 2>/dev/null || true
   stop_log_stream
+  remove_host_pid_file
   exit "$status"
 }
 
@@ -167,6 +214,7 @@ else
   server_status=$?
 fi
 stop_log_stream
+remove_host_pid_file
 
 if [[ "$server_status" -ne 0 ]]; then
   echo "MariaDB exited with status $server_status." >&2

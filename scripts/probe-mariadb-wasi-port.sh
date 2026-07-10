@@ -269,7 +269,7 @@ patch_mariadb_source() {
     s/bool success = !ftruncate\(file, size\);/bool success = !wasmtime_mariadb_file_truncate(file, size);/g;
     s/if \(fstat\(file, &st\) \|\| !os_file_log_maybe_unbuffered\(st\)\)/if (wasmtime_mariadb_file_fstat(file, \&st) || !os_file_log_maybe_unbuffered(st))/g;
     s/if \(!fstat\(file, &statbuf\)\)/if (!wasmtime_mariadb_file_fstat(file, \&statbuf))/g;
-    s/(int os_file_lock\(int fd, const char \*name\) noexcept\n\{\n)/$1#if defined(__wasi__)\n\t(void) fd;\n\t(void) name;\n\treturn 0;\n#endif\n/s;
+    s/(int os_file_lock\(int fd, const char \*name\) noexcept\n\{\n)/$1#if defined(__wasi__)\n\t(void) name;\n\treturn wasmtime_mariadb_file_lock_exclusive(fd);\n#endif\n/s;
   ' "$src/storage/innobase/os/os0file.cc"
 
   perl -0pi -e '

@@ -148,5 +148,7 @@ WordPress-focused subset, not a claim that all 6,588 pass.
 - `main.func_sformat` is excluded because malformed SFORMAT input currently
   aborts the Wasm server thread. It is not used by WordPress, but remains a
   known compatibility gap.
-- XA crash-recovery/durability guarantees and higher-concurrency correctness
-  remain unvalidated. The documented runner uses `--debug-no-sync`.
+- Prepared-XA recovery, physical power-loss durability, and higher-concurrency
+  correctness remain unvalidated. Ordinary strict InnoDB process-crash
+  recovery is now covered by `scripts/test-durability-recovery.sh`; the
+  documented runner no longer uses `--debug-no-sync` by default.

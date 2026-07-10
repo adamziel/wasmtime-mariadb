@@ -1,10 +1,14 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 use clap::Parser;
 use wasmtime::error::Context as _;
@@ -37,6 +41,11 @@ struct RuntimeEnv {
     next_thread_id: AtomicI32,
 }
 
+/// Holds the host advisory lock for a standard MariaDB data directory.
+struct DataDirLock {
+    _file: File,
+}
+
 #[derive(Clone)]
 struct ImportedSharedMemory {
     module: String,
@@ -64,6 +73,13 @@ struct Cli {
 
     #[arg(long, help = "Do not grant WASI network access")]
     no_network: bool,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Acquire an exclusive host advisory lock for the runner lifetime"
+    )]
+    lock_file: Option<PathBuf>,
 
     #[arg(
         long = "preopen",
@@ -158,6 +174,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    let _data_dir_lock = acquire_data_dir_lock(cli.lock_file.as_deref())?;
+
     let mut config = Config::new();
     config.wasm_threads(true);
     config.wasm_exceptions(true);
@@ -207,6 +225,55 @@ fn run() -> Result<()> {
         .call(&mut store, ())
         .context("embedded mariadbd module trapped")?;
     Ok(())
+}
+
+fn acquire_data_dir_lock(path: Option<&Path>) -> Result<Option<DataDirLock>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "failed to open MariaDB data-directory lock {}",
+                path.display()
+            )
+        })?;
+
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            let errno = error.raw_os_error();
+            if errno == Some(libc::EAGAIN) || errno == Some(libc::EWOULDBLOCK) {
+                bail!(
+                    "MariaDB data directory is already in use; another wasmtime-mariadb runner holds {}",
+                    path.display()
+                );
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to acquire MariaDB data-directory lock {}",
+                    path.display()
+                )
+            });
+        }
+        return Ok(Some(DataDirLock { _file: file }));
+    }
+
+    #[cfg(not(unix))]
+    {
+        drop(file);
+        bail!(
+            "--lock-file is currently supported only on Unix hosts: {}",
+            path.display()
+        );
+    }
 }
 
 fn build_base_linker(engine: &Engine) -> Result<Linker<AppState>> {
@@ -418,5 +485,19 @@ mod tests {
     #[test]
     fn rejects_empty_preopen_guest() {
         assert!(Preopen::from_str("/tmp/mariadb=").is_err());
+    }
+
+    #[test]
+    fn parses_lock_file() {
+        let cli = Cli::try_parse_from([
+            "wasmtime-mariadb",
+            "--lock-file",
+            "/tmp/mariadb.lock",
+            "--",
+            "--no-defaults",
+        ])
+        .unwrap();
+        assert_eq!(cli.lock_file, Some(PathBuf::from("/tmp/mariadb.lock")));
+        assert_eq!(cli.guest_args, ["--no-defaults"]);
     }
 }
