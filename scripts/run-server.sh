@@ -21,6 +21,10 @@ grant_args=()
 if [[ "${SKIP_GRANT_TABLES:-1}" != "0" ]]; then
   grant_args+=(--skip-grant-tables)
 fi
+init_args=(--init-file=/tmp/mariadb-system-tables.sql)
+if [[ "${SKIP_SYSTEM_TABLES_INIT:-0}" == "1" ]]; then
+  init_args=()
+fi
 
 if [[ ! -x "$bin" ]]; then
   echo "runner binary not found: $bin" >&2
@@ -59,7 +63,7 @@ exec "$bin" \
   --basedir=/tmp \
   --datadir=/tmp/data \
   --tmpdir=/tmp/tmp \
-  --init-file=/tmp/mariadb-system-tables.sql \
+  "${init_args[@]}" \
   --log-error=/tmp/mariadbd-runtime.err \
   --port="$port" \
   --bind-address=127.0.0.1 \

@@ -150,6 +150,12 @@ END//
 DELIMITER ;
 CALL wp_wasmtime_smoke_post_count();
 DROP PROCEDURE wp_wasmtime_smoke_post_count;
+
+CREATE FUNCTION wp_wasmtime_smoke_title_length()
+RETURNS INT DETERMINISTIC
+RETURN (SELECT CHAR_LENGTH(post_title) FROM wp_posts WHERE ID = 1);
+SELECT wp_wasmtime_smoke_title_length() AS title_length;
+DROP FUNCTION wp_wasmtime_smoke_title_length;
 SQL
 
 printf 'WordPress local-development SQL smoke passed on %s:%s.\n' "$host" "$port"

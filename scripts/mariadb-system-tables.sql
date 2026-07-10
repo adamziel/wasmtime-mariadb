@@ -47,6 +47,55 @@ CREATE TABLE IF NOT EXISTS proc (
 ) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3
   COMMENT='Stored Procedures';
 
+CREATE TABLE IF NOT EXISTS func (
+  name char(64) binary DEFAULT '' NOT NULL,
+  ret tinyint(1) DEFAULT '0' NOT NULL,
+  dl char(128) DEFAULT '' NOT NULL,
+  type enum('function','aggregate') COLLATE utf8mb3_general_ci NOT NULL,
+  PRIMARY KEY (name)
+) ENGINE=Aria TRANSACTIONAL=1 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin
+  COMMENT='User defined functions';
+
+-- These tables are empty by design. They allow HELP statements to run in the
+-- stripped local-development bootstrap without bundling MariaDB's full help
+-- corpus, and are needed by upstream implicit-commit coverage.
+CREATE TABLE IF NOT EXISTS help_topic (
+  help_topic_id int unsigned NOT NULL,
+  name char(64) NOT NULL,
+  help_category_id smallint unsigned NOT NULL,
+  description text NOT NULL,
+  example text NOT NULL,
+  url text NOT NULL,
+  PRIMARY KEY (help_topic_id),
+  UNIQUE KEY name (name)
+) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci
+  COMMENT='help topics';
+
+CREATE TABLE IF NOT EXISTS help_category (
+  help_category_id smallint unsigned NOT NULL,
+  name char(64) NOT NULL,
+  parent_category_id smallint unsigned DEFAULT NULL,
+  url text NOT NULL,
+  PRIMARY KEY (help_category_id),
+  UNIQUE KEY name (name)
+) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci
+  COMMENT='help categories';
+
+CREATE TABLE IF NOT EXISTS help_keyword (
+  help_keyword_id int unsigned NOT NULL,
+  name char(64) NOT NULL,
+  PRIMARY KEY (help_keyword_id),
+  UNIQUE KEY name (name)
+) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci
+  COMMENT='help keywords';
+
+CREATE TABLE IF NOT EXISTS help_relation (
+  help_topic_id int unsigned NOT NULL,
+  help_keyword_id int unsigned NOT NULL,
+  PRIMARY KEY (help_keyword_id, help_topic_id)
+) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci
+  COMMENT='keyword-topic relation';
+
 CREATE TABLE IF NOT EXISTS procs_priv (
   Host char(255) binary DEFAULT '' NOT NULL,
   Db char(64) binary DEFAULT '' NOT NULL,

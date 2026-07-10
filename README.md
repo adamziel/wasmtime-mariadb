@@ -178,6 +178,38 @@ These numbers are a TCP/protocol smoke benchmark over InnoDB with the
 prototype runner's default `--debug-no-sync` setting, not a durability
 benchmark.
 
+## Transaction Validation
+
+MTR is MariaDB's upstream integration/regression harness. Its 6,588 test
+scripts are not a query count: individual scripts can run loops, multiple
+connections, routines, and restarts. This repository has a focused 57-case
+transaction profile covering commits, rollbacks, implicit DDL commits,
+snapshots, locks, deadlocks, `NOWAIT`/`SKIP LOCKED`, XA statements, triggers,
+and normal foreign-key DDL:
+
+```sh
+MTR_BATCH_SIZE=4 \
+OUT_DIR=build/mtr-transaction-verified \
+./scripts/run-mtr-transaction-nuances.sh
+```
+
+For a measured query count, run the separate InnoDB workload. It starts and
+stops its own server, runs four concurrent clients with 15,000 mixed
+`SELECT`/`INSERT` statements each, turns autocommit off, and commits every 20
+statements:
+
+```sh
+OUT_DIR=build/slap-60k-transaction \
+./scripts/run-60k-transaction-workload.sh
+```
+
+The 2026-07-10 Linux x86_64 run issued 60,000 generated workload queries and
+recorded 64,012 `Query` commands in the server log, including 3,004 `COMMIT`s,
+in 88 wall-clock seconds. The companion transaction profile completed 57/57
+passes with zero skips or failures. See
+[`docs/transaction-validation-2026-07-10.md`](docs/transaction-validation-2026-07-10.md)
+for exact workload parameters, transaction coverage, and known non-passes.
+
 ## Development Checks
 
 Verify the Rust host without embedding MariaDB:
@@ -215,20 +247,30 @@ creation and updates, WooCommerce product and order persistence, and InnoDB
 commit and rollback behavior.
 
 Run the broader WordPress-focused external MTR profile. It starts a fresh
-server and datadir for every case, so expect it to take a while. It preserves
-the summary and logs while discarding completed test datadirs; set
-`MTR_PRESERVE_VARDIRS=1` when debugging a failure:
+server and datadir for every compatible batch and reruns a non-clean batch in
+isolation. It preserves the summary and logs while discarding completed test
+datadirs; set `MTR_PRESERVE_VARDIRS=1` when debugging a failure:
 
 ```sh
-OUT_DIR=build/mtr-wordpress-compat ./scripts/run-mtr-wordpress-compat.sh
+MTR_BATCH_SIZE=8 \
+OUT_DIR=build/mtr-wordpress-verified \
+./scripts/run-mtr-wordpress-broad.sh
 ```
+
+The current stable profile has 191 upstream MariaDB MTR cases selected for
+WordPress local development. It excludes one malformed-foreign-key recovery
+fixture that can intermittently trap a Wasmtime InnoDB purge thread; normal
+foreign-key behavior remains covered. Its 2026-07-10 final run passed all 191
+with zero skips and zero failures. See
+[`docs/wordpress-local-dev-compat-2026-07-10.md`](docs/wordpress-local-dev-compat-2026-07-10.md)
+for scope and exclusions.
 
 ## Limitations
 
 - Experimental only; this is not an official MariaDB or Wasmtime product.
 - The documented server uses `--skip-grant-tables`; authentication and normal
-  privilege management are not initialized. It creates only the routine and
-  startup metadata tables needed by the local-development runner.
+  privilege management are not initialized. It creates only the routine,
+  function, and startup metadata tables needed by the local-development runner.
 - The WordPress Core suite and focused WooCommerce persistence suites pass,
   but WooCommerce's broad upstream suite also includes fixture-plugin,
   external-service, feature-flag, and current-PHP test-harness coverage that
@@ -238,15 +280,23 @@ OUT_DIR=build/mtr-wordpress-compat ./scripts/run-mtr-wordpress-compat.sh
 - File locking is currently a no-op under WASI, and the no-binlog transaction
   coordinator path uses MariaDB's dummy coordinator instead of the mmap-backed
   TC log.
-- Crash recovery, XA/two-phase commit, replication, and production durability
-  semantics have not been validated. The documented runner also uses
-  `--debug-no-sync`.
+- MTR exercises XA statement handling, but crash recovery, full two-phase
+  commit recovery, replication, and production durability semantics have not
+  been validated. The documented runner also uses `--debug-no-sync`.
 - Basic MyISAM create/insert/select and temporary-table paths work in the
   current build, but InnoDB remains the documented path. Aria is compiled in
   but not meaningfully validated yet.
 - Ordinary temporary tables are covered by the WordPress compatibility suite,
   but fixed temporary-tablespace exhaustion and forced-recovery restart paths
   remain outside the local-development support claim.
+- Malformed SFORMAT input can currently abort the Wasm server thread. It is
+  not exercised by WordPress, but remains unsupported.
+- `idle_transaction_timeout` does not currently disconnect an idle transaction
+  as MariaDB's upstream test expects.
+- The full upstream `innodb.foreign_key` malformed-FK/restart/recovery fixture
+  is excluded after an intermittent Wasmtime InnoDB purge-thread memory trap.
+  Ordinary foreign-key create/alter/drop coverage passes, but malformed-FK
+  recovery is unsupported.
 - `DROP TABLE IF EXISTS` for nonexistent disk-engine tables can report a
   `.par` read-only error in this stripped build, so the benchmark uses unique
   table names instead of pre-dropping.

@@ -38,9 +38,15 @@ also supplies:
   in-test restarts.
 - A Unix-socket-to-TCP proxy for `mysqltest` `localhost` connections.
 - A watcher for MTR `.expect` files so `include/restart_mysqld.inc` can stop
-  and restart the Wasmtime server.
+  and restart the Wasmtime server. It waits for a stable file observation so
+  a partially written restart command cannot lose its options.
 - Simple per-test option-file handling for both top-level and
   `suite/<suite>/t/<test>-master.opt` files.
+- A PID bridge: `mysqltest --shutdown_server` sees the actual host Wasmtime
+  PID, rather than MariaDB's guest PID, so restart tests cannot accidentally
+  wait for an unrelated host process.
+- Status-aware result parsing. MTR `skipped` is a non-pass and makes the
+  harness exit nonzero.
 
 Versions:
 
@@ -58,9 +64,11 @@ Raw logs from the latest run:
 - `build/mtr-extern-smoke-current8/<test_name>/server.stderr`
 - `build/mtr-extern-smoke-current8/<test_name>/restart-watcher.log`
 
-## Summary
+## Historical smoke result
 
-22 tests were run. All passed.
+The raw 22-case result below predates status-aware parsing, when MTR skips
+could be recorded as passes. Keep it as historical diagnostic context, not as
+the current compatibility pass-rate claim.
 
 ```text
 main.select              PASS
@@ -87,6 +95,25 @@ innodb.foreign_key       PASS
 innodb.alter_table       PASS
 ```
 
+## Broader WordPress profile
+
+The WordPress-focused profile is maintained separately in
+`tests/wordpress-mtr-verified.txt`. Its current stable profile selects 191
+normal local-development cases. It excludes the deep
+`innodb.foreign_key` malformed-FK/restart/recovery fixture after an
+intermittent Wasmtime InnoDB purge-thread trap:
+
+```sh
+MTR_BATCH_SIZE=8 \
+OUT_DIR=build/mtr-wordpress-verified \
+./scripts/run-mtr-wordpress-broad.sh
+```
+
+The harness can batch compatible cases. If a batch has a non-pass result, it
+reruns every case in that batch in isolation before writing the summary. This
+keeps the profile practical to run while preserving per-case results.
+The final 2026-07-10 run recorded 191 passes, zero skips, and zero failures.
+
 ## What changed
 
 The latest pass fixed or normalized these blockers from earlier runs:
@@ -102,22 +129,31 @@ The latest pass fixed or normalized these blockers from earlier runs:
   in memory instead of using an incompatible temp `FILE*`.
 - In-test MTR restarts: the external harness watches `.expect` files and
   restarts the Wasmtime server behind a stable proxy port.
+- External restart PID handling: the harness publishes the host Wasmtime PID
+  into MTR's pid file after readiness, preventing `mysqltest` from waiting on
+  an unrelated process with the same guest PID.
+- Routine bootstrap: `mysql.func` is initialized alongside `mysql.proc`, so
+  SQL-function create/drop paths work in the documented local-development
+  runner.
 - `SHOW ENGINE INNODB STATUS`: WASI now returns a minimal transaction monitor
   section with `History list length`, which unblocks purge checks.
-- `innodb.foreign_key` error-log search: the SQL warning is still covered, but
-  this external harness captures matching console diagnostics in
-  `server.stderr`, not in MTR's `mysqld.1.err`; the expected result is
-  normalized for that external-run layout.
+- `innodb.foreign_key` error-log search: the external harness captures
+  matching console diagnostics in `server.stderr`, not MTR's
+  `mysqld.1.err`. The full malformed-FK/restart/recovery fixture is now
+  excluded from stable profiles after an intermittent Wasmtime purge-thread
+  memory trap; normal foreign-key cases remain covered.
 
 ## Remaining limitations
 
-This is still a small smoke suite. It does not cover replication, binlog-heavy
-tests, plugins, upgrade tests, stress/concurrency suites, backup suites, or most
-of the InnoDB matrix.
+The 22-case smoke suite is intentionally small. The separate 191-case
+WordPress profile expands normal SQL and InnoDB coverage, but neither profile
+covers replication, binlog-heavy tests, plugins, upgrade tests,
+stress/concurrency suites, backup suites, or all of the InnoDB matrix.
 
 The `SHOW ENGINE INNODB STATUS` output under WASI is currently a minimal
-fallback, not the full upstream monitor text. That is enough for these MTR
-purge checks but not enough for full diagnostic parity.
+fallback, not the full upstream monitor text. It is enough for the historical
+purge check, but not for the full lock-monitor diagnostic assertions in
+`innodb.gap_locks`.
 
 The bootstrap SQL is intentionally minimal and is not a full replacement for
 `mariadb-install-db`. Broader MTR coverage will likely expose more system-table
