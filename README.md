@@ -70,7 +70,7 @@ mean tomorrow:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.sh \
-  | bash -s -- --version v0.1.8
+  | bash -s -- --version v0.1.9
 ```
 
 ### Run the extracted release
@@ -78,11 +78,11 @@ curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scri
 The installer prints this command. Run it separately, in a real terminal:
 
 ```sh
-cd wasmtime-mariadb-v0.1.8-macos-aarch64
+cd wasmtime-mariadb-v0.1.9-macos-aarch64
 PORT=3307 ./scripts/run-server.sh
 ```
 
-Use `wasmtime-mariadb-v0.1.8-linux-x86_64` on Linux. The release archive
+Use `wasmtime-mariadb-v0.1.9-linux-x86_64` on Linux. The release archive
 contains the runner, server helpers, smoke tests, the Python benchmark, the
 60k workload, and validation docs. It does not contain the MariaDB source tree
 or the MTR harness.
@@ -93,7 +93,7 @@ The binary is unsigned. macOS may quarantine it. Remove the quarantine bit
 from the extracted directory before starting it:
 
 ```sh
-xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.8-macos-aarch64
+xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.9-macos-aarch64
 ```
 
 ## Run Methods
@@ -106,12 +106,17 @@ From a source checkout or extracted release directory:
 RUN_DIR="$PWD/build/run" PORT=3307 ./scripts/run-server.sh
 ```
 
-The server runs in the foreground. Stop it with `Ctrl-C`. The default run
-directory is `build/run`; use an explicit `RUN_DIR` when you want predictable
-data placement. The first start creates InnoDB files, then reports `ready for
-connections`. Do not use `Ctrl-C` as an initialization retry loop. If you
-interrupt a first start and want a clean retry, delete that run directory
-deliberately before starting again.
+The server runs in the foreground. Stop it with `Ctrl-C` only after it has
+reported `ready for connections`. The default run directory is `build/run`;
+use an explicit `RUN_DIR` when you want predictable data placement. The helper
+streams `RUN_DIR/mariadbd-runtime.err`, so first-start InnoDB initialization is
+visible instead of looking stuck. It can take up to a minute.
+
+Do not use `Ctrl-C` as an initialization retry loop. An interruption before
+readiness can leave a partial local data directory. The helper identifies the
+common incomplete-bootstrap state and prints the exact `rm -rf RUN_DIR`
+command needed for a disposable clean retry. On any other nonzero exit it
+prints the last 80 runtime-log lines.
 
 ### Different port or data directory
 
