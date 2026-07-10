@@ -266,6 +266,40 @@ CREATE TABLE IF NOT EXISTS index_stats (
   PRIMARY KEY (db_name,table_name,index_name,prefix_arity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin COMMENT='Statistics on Indexes';
 
+CREATE TABLE IF NOT EXISTS innodb_table_stats (
+  database_name varchar(64) NOT NULL,
+  table_name varchar(199) NOT NULL,
+  last_update timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  n_rows bigint unsigned NOT NULL,
+  clustered_index_size bigint unsigned NOT NULL,
+  sum_of_other_index_sizes bigint unsigned NOT NULL,
+  PRIMARY KEY (database_name, table_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin STATS_PERSISTENT=0;
+
+CREATE TABLE IF NOT EXISTS innodb_index_stats (
+  database_name varchar(64) NOT NULL,
+  table_name varchar(199) NOT NULL,
+  index_name varchar(64) NOT NULL,
+  last_update timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  stat_name varchar(64) NOT NULL,
+  stat_value bigint unsigned NOT NULL,
+  sample_size bigint unsigned,
+  stat_description varchar(1024) NOT NULL,
+  PRIMARY KEY (database_name, table_name, index_name, stat_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin STATS_PERSISTENT=0;
+
+CREATE TABLE IF NOT EXISTS transaction_registry (
+  transaction_id bigint unsigned NOT NULL,
+  commit_id bigint unsigned NOT NULL,
+  begin_timestamp timestamp(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000',
+  commit_timestamp timestamp(6) NOT NULL DEFAULT '0000-00-00 00:00:00.000000',
+  isolation_level enum('READ-UNCOMMITTED', 'READ-COMMITTED', 'REPEATABLE-READ', 'SERIALIZABLE') NOT NULL,
+  PRIMARY KEY (transaction_id),
+  UNIQUE KEY (commit_id),
+  KEY (begin_timestamp),
+  KEY (commit_timestamp, transaction_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_bin STATS_PERSISTENT=0;
+
 CREATE TABLE IF NOT EXISTS gtid_slave_pos (
   domain_id int unsigned NOT NULL,
   sub_id bigint unsigned NOT NULL,

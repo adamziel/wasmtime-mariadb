@@ -13,10 +13,9 @@ if ! command -v "$client" >/dev/null 2>&1; then
 fi
 
 ssl_arg=(--ssl-mode=DISABLED)
-case "$(basename "$client")" in
-  mariadb|mariadb-*)
-    ssl_arg=(--ssl=0)
-    ;;
+client_version="$("$client" --version 2>&1 || true)"
+case "$client_version" in
+  *MariaDB*|*mariadb*) ssl_arg=(--ssl=0) ;;
 esac
 
 table="mysql_client_smoke_$(date +%s)_$$"

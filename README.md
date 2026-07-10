@@ -193,6 +193,22 @@ cargo fmt --check
 cargo check --features dev-fixture
 ```
 
+Run the WordPress local-development SQL smoke against a running server. It
+creates and removes an isolated database:
+
+```sh
+PORT=3307 ./scripts/test-wordpress-local-dev.sh
+```
+
+Run the broader WordPress-focused external MTR profile. It starts a fresh
+server and datadir for every case, so expect it to take a while. It preserves
+the summary and logs while discarding completed test datadirs; set
+`MTR_PRESERVE_VARDIRS=1` when debugging a failure:
+
+```sh
+OUT_DIR=build/mtr-wordpress-compat ./scripts/run-mtr-wordpress-compat.sh
+```
+
 ## Limitations
 
 - Experimental only; this is not an official MariaDB or Wasmtime product.
@@ -209,11 +225,17 @@ cargo check --features dev-fixture
 - Basic MyISAM create/insert/select and temporary-table paths work in the
   current build, but InnoDB remains the documented path. Aria is compiled in
   but not meaningfully validated yet.
+- Ordinary temporary tables are covered by the WordPress compatibility suite,
+  but fixed temporary-tablespace exhaustion and forced-recovery restart paths
+  remain outside the local-development support claim.
 - `DROP TABLE IF EXISTS` for nonexistent disk-engine tables can report a
   `.par` read-only error in this stripped build, so the benchmark uses unique
   table names instead of pre-dropping.
 - The custom file shim does not yet track guest `chdir()`, so the run helper
   starts the process from the datadir.
 - Binary logging and TLS are disabled in the documented command.
+- Date and day locales via `lc_time_names` work from MariaDB's compiled-in
+  locale data. Localized server error messages still require the unbundled
+  `errmsg.sys` files, so `lc_messages` is not a supported configuration.
 - Dynamic plugin loading, signals, OS-level durability, and higher-concurrency
   correctness still need deeper validation.

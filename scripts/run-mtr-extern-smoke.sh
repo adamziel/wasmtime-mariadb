@@ -33,6 +33,7 @@ mtr_client_bindir="${MTR_CLIENT_BINDIR:-/usr/bin}"
 mtr_toolroot="${MTR_TOOLROOT:-$root/build/mtr-toolroot}"
 restart_with_grants="${MTR_RESTART_WITH_GRANTS:-1}"
 grant_port_offset="${MTR_GRANT_PORT_OFFSET:-10000}"
+preserve_vardirs="${MTR_PRESERVE_VARDIRS:-1}"
 
 if [[ "$mtr_dir" != /* ]]; then
   mtr_dir="$root/$mtr_dir"
@@ -198,6 +199,7 @@ rm -rf "$out_dir"
 mkdir -p "$out_dir"
 summary="$out_dir/summary.tsv"
 printf 'test\tstatus\texit_code\tlog\n' > "$summary"
+failed_tests=0
 
 server_pid=""
 server_pid_file=""
@@ -624,7 +626,18 @@ for idx in "${!tests[@]}"; do
   fi
 
   printf '%s\t%s\t%s\t%s\n' "$test_name" "$status" "$exit_code" "$log_file" | tee -a "$summary"
+  if [[ "$status" != "PASS" ]]; then
+    failed_tests=$((failed_tests + 1))
+  fi
+  cleanup_server
+  if [[ "$preserve_vardirs" != "1" ]]; then
+    rm -rf "$vardir/mysqld.1" "$vardir/run" "$vardir/std_data" "$vardir/tmp"
+  fi
 done
 
 cleanup_server
 echo "summary: $summary"
+if [[ "$failed_tests" -ne 0 ]]; then
+  echo "failed tests: $failed_tests" >&2
+  exit 1
+fi

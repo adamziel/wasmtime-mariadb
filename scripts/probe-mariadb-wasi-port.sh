@@ -195,6 +195,10 @@ patch_mariadb_source() {
   ' "$src/include/my_rdtsc.h"
 
   perl -0pi -e '
+    s/(  var->save_result\.ptr= locale;\n\n)(?!#if defined\(__wasi__\)\n  if \(!strcmp\(self->name\.str, "lc_time_names"\)\))/$1#if defined(__wasi__)\n  if (!strcmp(self->name.str, "lc_time_names"))\n  {\n    status_var_increment(thd->status_var.feature_locale);\n    return false;\n  }\n#endif\n\n/;
+  ' "$src/sql/sys_vars.cc"
+
+  perl -0pi -e '
     s/(\#elif defined\(_WIN32\)\n  \{\n    \/\* QueryPerformanceCounter usually works with about 1\/3 microsecond\. \*\/\n    LARGE_INTEGER t_cnt;\n\n    QueryPerformanceCounter\(&t_cnt\);\n    return \(ulonglong\) t_cnt\.QuadPart;\n  \}\n)#else\n  return 0;\n#endif/$1#elif defined(HAVE_CLOCK_GETTIME) \&\& defined(CLOCK_REALTIME)\n  {\n    static ulonglong last_value= 0;\n    struct timespec tp;\n    if (clock_gettime(CLOCK_REALTIME, \&tp) == 0)\n      last_value= (ulonglong) tp.tv_sec * 1000000 +\n                  (ulonglong) tp.tv_nsec \/ 1000;\n    else\n      last_value++;\n    return last_value;\n  }\n#else\n  return 0;\n#endif/s;
     s/(\#if defined\(HAVE_GETTIMEOFDAY\)\n   mti->microseconds\.routine= MY_TIMER_ROUTINE_GETTIMEOFDAY;\n)#elif defined\(_WIN32\)/$1#elif defined(HAVE_CLOCK_GETTIME) \&\& defined(CLOCK_REALTIME)\n  mti->microseconds.routine= MY_TIMER_ROUTINE_CLOCK_GETTIME;\n#elif defined(_WIN32)/s;
   ' "$src/mysys/my_rdtsc.c"
@@ -218,6 +222,10 @@ patch_mariadb_source() {
   perl -0pi -e '
     s/(aria_sort_buffer_size\t268434432\n)(?!innodb_sort_buffer_size\t)/$1innodb_sort_buffer_size\t1048576\n/;
   ' "$src/mysql-test/main/order_by.result"
+
+  perl -0pi -e '
+    s/(bulk_insert_buffer_size\t8388608\n)(?!innodb_alter_copy_bulk\tON\n)/$1innodb_alter_copy_bulk\tON\n/;
+  ' "$src/mysql-test/main/insert_select.result"
 
   perl -0pi -e '
     s/FOUND 1 \\/InnoDB: Cannot delete\\/update rows with cascading foreign key constraints that exceed max depth of 15\\.\\*\\/ in mysqld\\.1\\.err/NOT FOUND \\/InnoDB: Cannot delete\\/update rows with cascading foreign key constraints that exceed max depth of 15.*\\/ in mysqld.1.err/;
