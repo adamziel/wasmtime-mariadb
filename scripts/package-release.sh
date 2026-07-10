@@ -20,13 +20,16 @@ mkdir -p "$out_dir/$name/scripts"
 cp "$bin" "$out_dir/$name/"
 cp README.md "$out_dir/$name/"
 cp scripts/bench-tcp.py "$out_dir/$name/scripts/"
+cp scripts/mariadb-system-tables.sql "$out_dir/$name/scripts/"
 cp scripts/run-server.sh "$out_dir/$name/scripts/"
 cp scripts/test-mysql-client.sh "$out_dir/$name/scripts/"
+cp scripts/test-wordpress-local-dev.sh "$out_dir/$name/scripts/"
 chmod +x \
   "$out_dir/$name/wasmtime-mariadb" \
   "$out_dir/$name/scripts/bench-tcp.py" \
   "$out_dir/$name/scripts/run-server.sh" \
-  "$out_dir/$name/scripts/test-mysql-client.sh"
+  "$out_dir/$name/scripts/test-mysql-client.sh" \
+  "$out_dir/$name/scripts/test-wordpress-local-dev.sh"
 
 tar -czf "$out_dir/$archive" -C "$out_dir" "$name"
 ls -lh "$out_dir/$archive"

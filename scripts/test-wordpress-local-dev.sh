@@ -141,6 +141,15 @@ ALTER TABLE wp_posts ADD KEY wasmtime_smoke_author_date (post_author, post_date)
 SELECT ENGINE, TABLE_COLLATION
 FROM information_schema.TABLES
 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_posts';
+
+DELIMITER //
+CREATE PROCEDURE wp_wasmtime_smoke_post_count()
+BEGIN
+  SELECT COUNT(*) AS post_count FROM wp_posts;
+END//
+DELIMITER ;
+CALL wp_wasmtime_smoke_post_count();
+DROP PROCEDURE wp_wasmtime_smoke_post_count;
 SQL
 
 printf 'WordPress local-development SQL smoke passed on %s:%s.\n' "$host" "$port"

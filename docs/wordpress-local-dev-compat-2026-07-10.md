@@ -48,11 +48,60 @@ posts, options, postmeta, term, taxonomy, and term-relationship tables with
 the current core index prefixes. It verifies `utf8mb4_unicode_520_ci`, a 1 MiB
 `LONGTEXT` post containing an emoji, option upserts, a taxonomy join,
 `SQL_CALC_FOUND_ROWS`, schema inspection, a transaction, localized date names,
-and an index migration.
+an index migration, and a stored procedure create/call/drop cycle.
 
-The latest run passed through a normal TCP MariaDB client. A PHP `wpdb`
-integration test was not run here because the local PHP runtime has no
-`mysqli` extension installed.
+The stored-routine check caught a real runner gap: MariaDB needs
+`mysql.proc` when creating routines, even when the server runs with
+`--skip-grant-tables`. `scripts/run-server.sh` now bootstraps the minimal
+non-authentication metadata tables needed for routine and startup handling.
+
+## WordPress Core and WooCommerce
+
+The WordPress Core PHP suite was run against the Wasmtime server using
+WordPress source at `cec8718050f2` (WordPress 7.1.0):
+
+```text
+Tests: 30059, Assertions: 4556437, Warnings: 86, Skipped: 77.
+```
+
+It completed with no failures. The warnings and skips are Core's
+environment-dependent coverage (for example image and external-cache support),
+not database errors.
+
+WooCommerce source at `00b15cb109a9` (11.1.0-dev) was tested against a clean
+database before every group. The database-facing groups passed:
+
+| Coverage | Result |
+| --- | --- |
+| Simple product CRUD | 15 tests, 33 assertions |
+| Product datastore CRUD/search/meta | 35 tests, 144 assertions |
+| CPT order CRUD | 143 tests, 215 assertions |
+| HPOS order datastore | 106 tests, 674 assertions, 1 upstream skip |
+| HPOS queries and synchronization | 56 tests, 248 assertions, 1 upstream skip |
+| Repository WordPress/WooCommerce smoke | 3 tests, 24 assertions |
+
+The repository smoke is reproducible once a normal WooCommerce test
+environment is configured to use the running server:
+
+```sh
+WP_TESTS_DIR=/path/to/wordpress-tests-lib \
+WOOCOMMERCE_DIR=/path/to/woocommerce \
+./scripts/test-wordpress-woocommerce-local-dev.sh
+```
+
+It resets the configured test database and boots real WordPress and
+WooCommerce. It saves and reloads a page, a simple product, and an order; it
+also verifies direct InnoDB `ROLLBACK` and `COMMIT` behavior.
+
+The broad default WooCommerce suite was also attempted. Its initial run
+reported 176 errors and 77 failures, but the failures were not database server
+errors: the current suite emits bootstrap output before tests that set cookies,
+uses a reflection call deprecated by PHP 8.5, and expects fixture plugins,
+external data, and feature configurations absent from this checkout. After
+installing WordPress outside PHPUnit and enabling output buffering, the suite
+passed the database-facing groups above but later stalled in an upstream PHP
+subprocess with idle database connections. It is therefore not used as a
+server pass-rate claim.
 
 ## Deliberate exclusions and limits
 

@@ -86,6 +86,10 @@ jobs:
             dump_logs
             exit 1
           }
+          MYSQL="$(brew --prefix mysql-client)/bin/mysql" PORT="$PORT" ./scripts/test-wordpress-local-dev.sh || {
+            dump_logs
+            exit 1
+          }
 
       - name: Package
         run: |

@@ -200,6 +200,20 @@ creates and removes an isolated database:
 PORT=3307 ./scripts/test-wordpress-local-dev.sh
 ```
 
+Run the application-level WordPress and WooCommerce regression after preparing
+their normal upstream test environment. Its `wp-tests-config.php` must point
+at the running Wasmtime MariaDB instance:
+
+```sh
+WP_TESTS_DIR=/path/to/wordpress-tests-lib \
+WOOCOMMERCE_DIR=/path/to/woocommerce \
+./scripts/test-wordpress-woocommerce-local-dev.sh
+```
+
+It resets the configured WordPress test database, then verifies WordPress page
+creation and updates, WooCommerce product and order persistence, and InnoDB
+commit and rollback behavior.
+
 Run the broader WordPress-focused external MTR profile. It starts a fresh
 server and datadir for every case, so expect it to take a while. It preserves
 the summary and logs while discarding completed test datadirs; set
@@ -212,8 +226,13 @@ OUT_DIR=build/mtr-wordpress-compat ./scripts/run-mtr-wordpress-compat.sh
 ## Limitations
 
 - Experimental only; this is not an official MariaDB or Wasmtime product.
-- The documented server uses `--skip-grant-tables`; authentication and system
-  privilege tables are not initialized.
+- The documented server uses `--skip-grant-tables`; authentication and normal
+  privilege management are not initialized. It creates only the routine and
+  startup metadata tables needed by the local-development runner.
+- The WordPress Core suite and focused WooCommerce persistence suites pass,
+  but WooCommerce's broad upstream suite also includes fixture-plugin,
+  external-service, feature-flag, and current-PHP test-harness coverage that
+  is not a server compatibility certification.
 - InnoDB is enabled and verified for basic `CREATE TABLE`, `INSERT`, `SELECT`,
   and simple concurrent inserts, but this is still prototype storage support.
 - File locking is currently a no-op under WASI, and the no-binlog transaction

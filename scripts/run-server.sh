@@ -11,6 +11,8 @@ else
 fi
 run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
+system_tables_source="$root/scripts/mariadb-system-tables.sql"
+system_tables_init="$run_dir/mariadb-system-tables.sql"
 read -r -a extra_runner_args <<< "${RUNNER_ARGS:-}"
 grant_args=()
 if [[ "${SKIP_GRANT_TABLES:-1}" != "0" ]]; then
@@ -22,8 +24,13 @@ if [[ ! -x "$bin" ]]; then
   echo "build it with: ./scripts/build-single.sh build/mariadb-wasi-port/build/sql/mariadbd" >&2
   exit 2
 fi
+if [[ ! -r "$system_tables_source" ]]; then
+  echo "MariaDB system-table bootstrap not found: $system_tables_source" >&2
+  exit 2
+fi
 
 mkdir -p "$run_dir/tmp" "$run_dir/data"
+cp "$system_tables_source" "$system_tables_init"
 
 # The current file shim does not track guest chdir(), and MariaDB uses relative
 # paths after selecting its datadir. Run from the host datadir until chdir is
@@ -46,6 +53,7 @@ exec "$bin" \
   --basedir=/tmp \
   --datadir=/tmp/data \
   --tmpdir=/tmp/tmp \
+  --init-file=/tmp/mariadb-system-tables.sql \
   --log-error=/tmp/mariadbd-runtime.err \
   --port="$port" \
   --bind-address=127.0.0.1 \
