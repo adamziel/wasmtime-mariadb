@@ -68,6 +68,7 @@ exec "$bin" \
   --port="$port" \
   --bind-address=127.0.0.1 \
   --skip-log-bin \
+  --skip-slave-start \
   --default-storage-engine=InnoDB \
   --innodb-buffer-pool-size=16M \
   --innodb-buffer-pool-size-max=16M \

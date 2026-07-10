@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS help_relation (
 ) ENGINE=Aria TRANSACTIONAL=0 DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci
   COMMENT='keyword-topic relation';
 
+-- Replication is disabled, but MariaDB still expects this metadata table to
+-- exist when inspecting GTID state.
+CREATE TABLE IF NOT EXISTS gtid_slave_pos (
+  domain_id int unsigned NOT NULL,
+  sub_id bigint unsigned NOT NULL,
+  server_id int unsigned NOT NULL,
+  seq_no bigint unsigned NOT NULL,
+  PRIMARY KEY (domain_id, sub_id)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1
+  COMMENT='Replication slave GTID position';
+
 CREATE TABLE IF NOT EXISTS procs_priv (
   Host char(255) binary DEFAULT '' NOT NULL,
   Db char(64) binary DEFAULT '' NOT NULL,

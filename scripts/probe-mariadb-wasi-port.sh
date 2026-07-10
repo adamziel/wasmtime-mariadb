@@ -291,6 +291,9 @@ patch_mariadb_source() {
     s/(#include "os0file\.h"\n)/$1#if defined(__wasi__)\n#include "mariadb_wasi_file_shim.h"\n#endif\n/;
     s/fstat\(m_handle, &m_file_info\);/wasmtime_mariadb_file_fstat(m_handle, \&m_file_info);/g;
   ' "$src/storage/innobase/fsp/fsp0file.cc"
+
+  patch --batch --forward -d "$src" -p1 < \
+    "$root/patches/mariadb-wasi/0001-skip-gtid-loader-with-skip-slave-start.patch"
 }
 
 patch_mariadb_source "$src_dir"

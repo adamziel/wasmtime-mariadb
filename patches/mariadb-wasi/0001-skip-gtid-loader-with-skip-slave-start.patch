@@ -1,0 +1,28 @@
+diff --git a/sql/slave.cc b/sql/slave.cc
+--- a/sql/slave.cc
++++ b/sql/slave.cc
+@@ -676,6 +676,14 @@ int init_slave()
+   if (global_rpl_thread_pool.init(opt_slave_parallel_threads))
+     return 1;
+ 
++#if defined(__wasi__)
++  /*
++    The WASI local-development runner disables replication explicitly. Do not
++    load the GTID replica state before its minimal mysql schema exists.
++  */
++  if (!opt_skip_slave_start)
++  {
++#endif
+   slave_background_thread_gtid_loaded= false;
+   mysql_manager_submit(bg_rpl_load_gtid_slave_state, NULL);
+ 
+@@ -685,6 +692,9 @@ int init_slave()
+                     &global_rpl_thread_pool.LOCK_rpl_thread_pool);
+   mysql_mutex_unlock(&global_rpl_thread_pool.LOCK_rpl_thread_pool);
+ 
++#if defined(__wasi__)
++  }
++#endif
+   /*
+     This is called when mysqld starts. Before client connections are
+     accepted. However bootstrap may conflict with us if it does START SLAVE.
