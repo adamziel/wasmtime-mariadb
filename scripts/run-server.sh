@@ -124,20 +124,26 @@ stop_log_stream() {
 }
 
 forward_signal() {
-  local signal="$1"
-  local status="$2"
+  local status="$1"
 
   trap - INT TERM
   if kill -0 "$server_pid" 2>/dev/null; then
-    kill "-$signal" "$server_pid" 2>/dev/null || true
+    kill -TERM "$server_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$server_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$server_pid" 2>/dev/null; then
+      kill -KILL "$server_pid" 2>/dev/null || true
+    fi
   fi
   wait "$server_pid" 2>/dev/null || true
   stop_log_stream
   exit "$status"
 }
 
-trap 'forward_signal INT 130' INT
-trap 'forward_signal TERM 143' TERM
+trap 'forward_signal 130' INT
+trap 'forward_signal 143' TERM
 
 # --log-error writes MariaDB's useful startup diagnostics to a file. Stream
 # only lines from this invocation so a foreground user can see first boot work.
@@ -150,6 +156,11 @@ if [[ -f "$runtime_log" ]]; then
   tail_pid=$!
 fi
 
+# Bash defers INT/TERM traps while it blocks in `wait` for a child. Polling
+# keeps Ctrl-C responsive while the native host runs in the background.
+while kill -0 "$server_pid" 2>/dev/null; do
+  sleep 0.1
+done
 if wait "$server_pid"; then
   server_status=0
 else

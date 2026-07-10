@@ -70,7 +70,7 @@ mean tomorrow:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.sh \
-  | bash -s -- --version v0.1.9
+  | bash -s -- --version v0.1.10
 ```
 
 ### Run the extracted release
@@ -78,11 +78,11 @@ curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scri
 The installer prints this command. Run it separately, in a real terminal:
 
 ```sh
-cd wasmtime-mariadb-v0.1.9-macos-aarch64
+cd wasmtime-mariadb-v0.1.10-macos-aarch64
 PORT=3307 ./scripts/run-server.sh
 ```
 
-Use `wasmtime-mariadb-v0.1.9-linux-x86_64` on Linux. The release archive
+Use `wasmtime-mariadb-v0.1.10-linux-x86_64` on Linux. The release archive
 contains the runner, server helpers, smoke tests, the Python benchmark, the
 60k workload, and validation docs. It does not contain the MariaDB source tree
 or the MTR harness.
@@ -93,7 +93,7 @@ The binary is unsigned. macOS may quarantine it. Remove the quarantine bit
 from the extracted directory before starting it:
 
 ```sh
-xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.9-macos-aarch64
+xattr -dr com.apple.quarantine wasmtime-mariadb-v0.1.10-macos-aarch64
 ```
 
 ## Run Methods
