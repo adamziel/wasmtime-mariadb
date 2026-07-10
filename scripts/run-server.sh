@@ -40,6 +40,9 @@ cp "$system_tables_source" "$system_tables_init"
 # modeled explicitly.
 cd "$run_dir/data"
 
+# Bash 3.2 treats an empty array as unset under `set -u`. All inputs have been
+# validated above, and the shell is immediately replaced by the runner below.
+set +u
 exec "$bin" \
   --no-inherit-env \
   --preopen "$run_dir=/tmp" \
