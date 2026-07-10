@@ -13,7 +13,10 @@ run_dir="${RUN_DIR:-$root/build/run}"
 port="${PORT:-3307}"
 system_tables_source="$root/scripts/mariadb-system-tables.sql"
 system_tables_init="$run_dir/mariadb-system-tables.sql"
-read -r -a extra_runner_args <<< "${RUNNER_ARGS:-}"
+extra_runner_args=()
+if [[ -n "${RUNNER_ARGS:-}" ]]; then
+  read -r -a extra_runner_args <<< "$RUNNER_ARGS"
+fi
 grant_args=()
 if [[ "${SKIP_GRANT_TABLES:-1}" != "0" ]]; then
   grant_args+=(--skip-grant-tables)
