@@ -80,6 +80,8 @@ jobs:
 
       - name: Exercise lifecycle and recovery
         shell: bash
+        env:
+          WASMTIME_MARIADB_FILE_TRACE: ${{ runner.os == 'Windows' && '1' || '' }}
         run: |
           python scripts/test-supervisor-lifecycle.py \
             --run-dir "$PWD/build/ci-supervisor-lifecycle" \
