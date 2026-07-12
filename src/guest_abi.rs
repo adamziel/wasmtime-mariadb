@@ -214,6 +214,7 @@ pub(crate) fn errno_for_guest(errno: i32) -> i32 {
 }
 
 /// Returns the last host errno, using I/O as the only portable fallback.
+#[cfg(not(windows))]
 pub(crate) fn last_errno() -> i32 {
     std::io::Error::last_os_error()
         .raw_os_error()
