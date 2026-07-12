@@ -283,6 +283,7 @@ These tests require a running server unless stated otherwise.
 | WordPress SQL smoke | `PORT=3307 ./scripts/test-wordpress-local-dev.sh` | WordPress-shaped schema, utf8mb4, LONGTEXT, indexes, transactions, routines, locale data |
 | Raw protocol benchmark smoke | `python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5` | Python implementation of the MySQL wire protocol can connect and issue SQL |
 | Supervisor lifecycle | `python3 scripts/test-supervisor-lifecycle.py` | Startup metadata, controlled-stop recovery, Unix signal cleanup, and Windows runner-crash recovery |
+| Release entry points | `python3 scripts/test-supervisor-lifecycle.py --entrypoint` | The documented `run-server` and `stop-server` wrappers around the same lifecycle contract |
 | WordPress/WooCommerce integration | `WP_TESTS_DIR=/path/to/wordpress-tests-lib WOOCOMMERCE_DIR=/path/to/woocommerce ./scripts/test-wordpress-woocommerce-local-dev.sh` | Real WordPress/WooCommerce persistence against a configured upstream test environment |
 
 Set `HOST`, `PORT`, and `MYSQL` to override the smoke-test target and client.

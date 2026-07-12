@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the release supervisor's local start, stop, and recovery contract."""
+"""Exercise the local lifecycle contract directly and through release entry points."""
 
 import argparse
 import importlib.util
@@ -88,32 +88,84 @@ def force_cleanup(process, endpoint):
             pass
 
 
+def lifecycle_environment(args, run_dir):
+    """Builds the public helper environment from explicit test binary paths."""
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BIN": str(args.runner),
+            "DURABILITY": "strict",
+            "PORT": args.port,
+            "RUN_DIR": str(run_dir),
+            "SUPERVISOR": str(args.supervisor),
+        }
+    )
+    return environment
+
+
 def start_supervisor(args, run_dir, number):
-    """Starts one foreground supervisor and returns its process, metadata, and log path."""
+    """Starts the direct supervisor or documented wrapper and waits for readiness."""
     endpoint_path = run_dir / ".wasmtime-mariadb-endpoint.json"
     log_path = run_dir / f"supervisor-{number}.log"
-    command = [
-        str(args.supervisor),
-        "--bin",
-        str(args.runner),
-        "--run-dir",
-        str(run_dir),
-        "--port",
-        args.port,
-        "--durability",
-        "strict",
-    ]
+    environment = None
+    if args.entrypoint:
+        root = Path(__file__).resolve().parent.parent
+        if os.name == "nt":
+            command = [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(root / "scripts" / "run-server.ps1"),
+            ]
+        else:
+            command = [str(root / "scripts" / "run-server.sh")]
+        environment = lifecycle_environment(args, run_dir)
+    else:
+        command = [
+            str(args.supervisor),
+            "--bin",
+            str(args.runner),
+            "--run-dir",
+            str(run_dir),
+            "--port",
+            args.port,
+            "--durability",
+            "strict",
+        ]
     with log_path.open("wb") as log:
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(
+            command,
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
     endpoint = wait_for_ready(process, endpoint_path, log_path)
     return process, endpoint, log_path
 
 
 def request_stop(args, run_dir):
-    """Uses the public control command instead of reaching into a process table."""
+    """Uses the direct supervisor or matching public stop wrapper."""
+    environment = None
+    if args.entrypoint:
+        root = Path(__file__).resolve().parent.parent
+        if os.name == "nt":
+            command = [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(root / "scripts" / "stop-server.ps1"),
+                "-RunDir",
+                str(run_dir),
+            ]
+        else:
+            command = [str(root / "scripts" / "stop-server.sh"), str(run_dir)]
+        environment = lifecycle_environment(args, run_dir)
+    else:
+        command = [str(args.supervisor), "--stop-run-dir", str(run_dir)]
     subprocess.run(
-        [str(args.supervisor), "--stop-run-dir", str(run_dir)],
+        command,
         check=True,
+        env=environment,
         timeout=10,
     )
 
@@ -163,11 +215,16 @@ def parse_args():
     parser.add_argument("--supervisor", type=Path, default=default_binary(root, "wasmtime-mariadb-supervisor"))
     parser.add_argument("--runner", type=Path, default=default_binary(root, "wasmtime-mariadb"))
     parser.add_argument("--port", default="auto")
+    parser.add_argument(
+        "--entrypoint",
+        action="store_true",
+        help="exercise the documented run-server and stop-server wrappers",
+    )
     return parser.parse_args()
 
 
 def main():
-    """Runs controlled stop/restart checks everywhere and Unix signal checks."""
+    """Runs lifecycle checks through the selected launch surface on every host."""
     args = parse_args()
     args.supervisor = args.supervisor.resolve()
     args.runner = args.runner.resolve()
