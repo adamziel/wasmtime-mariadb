@@ -175,37 +175,30 @@ impl HostFiles {
         }
     }
 
+    #[cfg(unix)]
     fn pread(&self, fd: i32, buf: &mut [u8], offset: u64) -> i32 {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
-            match host_file.file.read_at(buf, offset) {
-                Ok(n) => {
-                    file_trace(format_args!(
-                        "pread fd={fd} path={} len={} offset={offset} rc={n}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
-                }
-                Err(err) => {
-                    let errno = io_errno(err);
-                    file_trace(format_args!(
-                        "pread fd={fd} path={} len={} offset={offset} errno={errno}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    neg_errno(errno)
-                }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
+        match host_file.file.read_at(buf, offset) {
+            Ok(n) => {
+                file_trace(format_args!(
+                    "pread fd={fd} path={} len={} offset={offset} rc={n}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
             }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (fd, buf, offset);
-            neg_errno(libc::ENOSYS)
+            Err(err) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "pread fd={fd} path={} len={} offset={offset} errno={errno}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                neg_errno(errno)
+            }
         }
     }
 
@@ -235,37 +228,30 @@ impl HostFiles {
         }
     }
 
+    #[cfg(unix)]
     fn pwrite(&self, fd: i32, buf: &[u8], offset: u64) -> i32 {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
-            match host_file.file.write_at(buf, offset) {
-                Ok(n) => {
-                    file_trace(format_args!(
-                        "pwrite fd={fd} path={} len={} offset={offset} rc={n}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
-                }
-                Err(err) => {
-                    let errno = io_errno(err);
-                    file_trace(format_args!(
-                        "pwrite fd={fd} path={} len={} offset={offset} errno={errno}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    neg_errno(errno)
-                }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
+        match host_file.file.write_at(buf, offset) {
+            Ok(n) => {
+                file_trace(format_args!(
+                    "pwrite fd={fd} path={} len={} offset={offset} rc={n}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
             }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (fd, buf, offset);
-            neg_errno(libc::ENOSYS)
+            Err(err) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "pwrite fd={fd} path={} len={} offset={offset} errno={errno}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                neg_errno(errno)
+            }
         }
     }
 
@@ -368,66 +354,45 @@ impl HostFiles {
         }
     }
 
+    #[cfg(unix)]
     fn lock_exclusive(&self, fd: i32) -> i32 {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
 
-            match fcntl_lock(&host_file.file, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => {
-                    file_trace(format_args!(
-                        "lock_exclusive fd={fd} path={} rc=0",
-                        host_file.path.display()
-                    ));
-                    0
-                }
-                Err(err) => {
-                    let errno = err.raw_os_error();
-                    file_trace(format_args!(
-                        "lock_exclusive fd={fd} path={} errno={errno}",
-                        host_file.path.display()
-                    ));
-                    neg_errno(errno)
-                }
+        match fcntl_lock(&host_file.file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} rc=0",
+                    host_file.path.display()
+                ));
+                0
+            }
+            Err(err) => {
+                let errno = err.raw_os_error();
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={errno}",
+                    host_file.path.display()
+                ));
+                neg_errno(errno)
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = fd;
-            neg_errno(libc::ENOTSUP)
-        }
     }
 
+    #[cfg(unix)]
     fn fstat(&self, fd: i32) -> std::result::Result<HostFileStat, i32> {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return Err(libc::EBADF);
-            };
-            stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = fd;
-            Err(libc::ENOSYS)
-        }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return Err(libc::EBADF);
+        };
+        stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
     }
 
+    #[cfg(unix)]
     fn stat(&self, guest_path: &str) -> std::result::Result<HostFileStat, i32> {
-        #[cfg(unix)]
-        {
-            let host_path = self.resolve(guest_path)?;
-            stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = guest_path;
-            Err(libc::ENOSYS)
-        }
+        let host_path = self.resolve(guest_path)?;
+        stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
     }
 
     fn resolve(&self, guest_path: &str) -> std::result::Result<PathBuf, i32> {
@@ -457,6 +422,7 @@ impl HostFiles {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
     linker.func_wrap(
         MODULE_NAME,
@@ -592,31 +558,21 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                 Ok(stat) => stat,
                 Err(errno) => return neg_errno(errno),
             };
-            if let Err(errno) = write_i64(&mut caller, size_ptr, stat.size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, blocks_ptr, stat.blocks) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, block_size_ptr, stat.block_size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, dev_ptr, stat.dev) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i32(&mut caller, mode_ptr, stat.mode) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, atime_ptr, stat.atime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, mtime_ptr, stat.mtime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, ctime_ptr, stat.ctime) {
-                return neg_errno(errno);
-            }
-            0
+            write_file_stat(
+                &mut caller,
+                stat,
+                [
+                    size_ptr,
+                    blocks_ptr,
+                    block_size_ptr,
+                    dev_ptr,
+                    mode_ptr,
+                    atime_ptr,
+                    mtime_ptr,
+                    ctime_ptr,
+                ],
+            )
+            .map_or_else(neg_errno, |_| 0)
         },
     )?;
 
@@ -645,34 +601,30 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     return neg_errno(errno);
                 }
             };
-            if let Err(errno) = write_i64(&mut caller, size_ptr, stat.size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, blocks_ptr, stat.blocks) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, block_size_ptr, stat.block_size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, dev_ptr, stat.dev) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i32(&mut caller, mode_ptr, stat.mode) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, atime_ptr, stat.atime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, mtime_ptr, stat.mtime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, ctime_ptr, stat.ctime) {
-                return neg_errno(errno);
-            }
-            0
+            write_file_stat(
+                &mut caller,
+                stat,
+                [
+                    size_ptr,
+                    blocks_ptr,
+                    block_size_ptr,
+                    dev_ptr,
+                    mode_ptr,
+                    atime_ptr,
+                    mtime_ptr,
+                    ctime_ptr,
+                ],
+            )
+            .map_or_else(neg_errno, |_| 0)
         },
     )?;
 
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn add_to_linker(_linker: &mut Linker<AppState>) -> Result<()> {
+    // Release builds support Unix hosts only; the fixture can still instantiate.
     Ok(())
 }
 
@@ -733,20 +685,29 @@ fn join_suffix(root: &Path, suffix: &str) -> PathBuf {
     path
 }
 
-fn write_i32(
+#[cfg(unix)]
+fn write_file_stat(
     caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    value: i32,
+    stat: HostFileStat,
+    [size, blocks, block_size, dev, mode, atime, mtime, ctime]: [i32; 8],
 ) -> std::result::Result<(), i32> {
-    guest_abi::write(caller, ptr, &value.to_le_bytes())
-}
-
-fn write_i64(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    value: i64,
-) -> std::result::Result<(), i32> {
-    guest_abi::write(caller, ptr, &value.to_le_bytes())
+    for (ptr, value) in [
+        (size, stat.size),
+        (blocks, stat.blocks),
+        (block_size, stat.block_size),
+        (dev, stat.dev),
+    ] {
+        guest_abi::write(caller, ptr, &value.to_le_bytes())?;
+    }
+    guest_abi::write(caller, mode, &stat.mode.to_le_bytes())?;
+    for (ptr, value) in [
+        (atime, stat.atime),
+        (mtime, stat.mtime),
+        (ctime, stat.ctime),
+    ] {
+        guest_abi::write(caller, ptr, &value.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 fn io_error_from_errno(errno: i32) -> std::io::Error {

@@ -14,6 +14,7 @@ directory and then act surprised when the unsupported pieces break.
 The documented path is deliberately narrow:
 
 - One local server bound to `127.0.0.1`.
+- Unix hosts only; Windows is not supported.
 - InnoDB tables, normal DDL/DML, WordPress schema changes, and ordinary local
   development transactions.
 - macOS Apple Silicon or Linux x86_64 release binaries.

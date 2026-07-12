@@ -42,6 +42,15 @@ fi
 if [[ "$out_dir" != /* ]]; then
   out_dir="$root/$out_dir"
 fi
+if [[ -n "$mtr_bindir" && "$mtr_bindir" != /* ]]; then
+  mtr_bindir="$root/$mtr_bindir"
+fi
+if [[ "$mtr_client_bindir" != /* ]]; then
+  mtr_client_bindir="$root/$mtr_client_bindir"
+fi
+if [[ "$mtr_toolroot" != /* ]]; then
+  mtr_toolroot="$root/$mtr_toolroot"
+fi
 if ! [[ "$batch_size" =~ ^[1-9][0-9]*$ ]]; then
   echo "MTR_BATCH_SIZE must be a positive integer" >&2
   exit 2
