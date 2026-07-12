@@ -11,7 +11,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
-$Binary = Join-Path $Root $Binary
+if (-not [IO.Path]::IsPathRooted($Binary)) {
+    $Binary = Join-Path $Root $Binary
+}
 $Supervisor = Join-Path (Split-Path -Parent $Binary) 'wasmtime-mariadb-supervisor.exe'
 if (-not (Test-Path $Binary)) {
     throw "runner binary not found: $Binary"
@@ -20,7 +22,9 @@ if (-not (Test-Path $Supervisor)) {
     throw "supervisor binary not found: $Supervisor"
 }
 
-$OutDir = Join-Path $Root $OutDir
+if (-not [IO.Path]::IsPathRooted($OutDir)) {
+    $OutDir = Join-Path $Root $OutDir
+}
 $Name = "wasmtime-mariadb-$Version-$AssetSuffix"
 $PackageDir = Join-Path $OutDir $Name
 $Archive = Join-Path $OutDir "wasmtime-mariadb-$AssetSuffix.zip"

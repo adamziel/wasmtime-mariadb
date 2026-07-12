@@ -14,10 +14,11 @@ directory and then act surprised when the unsupported pieces break.
 The documented path is deliberately narrow:
 
 - One local server bound to `127.0.0.1`.
-- Unix hosts only; Windows is not supported.
+- Linux x86_64, macOS Apple Silicon, and Windows x86_64 hosts.
 - InnoDB tables, normal DDL/DML, WordPress schema changes, and ordinary local
   development transactions.
-- macOS Apple Silicon or Linux x86_64 release binaries.
+- Release archives for Linux x86_64 and macOS Apple Silicon; the next release
+  also adds Windows x86_64. CI exercises the real server on all three hosts.
 - Root access with `--skip-grant-tables`; there is no authentication setup.
 
 The release validates strict InnoDB process-crash recovery on the tested local
@@ -29,7 +30,7 @@ management. Those are different projects, not missing README flags.
 
 | Method | What it needs |
 | --- | --- |
-| Run a release binary | macOS Apple Silicon or Linux x86_64 |
+| Run a release binary | Linux x86_64, macOS Apple Silicon, or Windows x86_64 |
 | Connect or run smoke tests | `mysql` or `mariadb` client |
 | TCP benchmark | Python 3 |
 | 60k transaction workload | `mariadb-admin` plus `mariadb-slap` or `mysqlslap` |
@@ -66,6 +67,18 @@ curl -fsSL https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scri
 It supports Linux x86_64 and macOS Apple Silicon. Intel macOS is not a release
 target. Build from source if that is your machine.
 
+### Install on Windows
+
+In PowerShell, the Windows installer performs the same checksum verification
+and extraction without starting the server:
+
+```powershell
+irm https://raw.githubusercontent.com/adamziel/wasmtime-mariadb/main/scripts/install-release.ps1 | iex
+```
+
+Windows x86_64 archives are produced by the next release. The current
+`v0.1.11` release predates that archive.
+
 ### Install a specific release
 
 Use this when reproducibility matters more than whatever `latest` happens to
@@ -85,10 +98,12 @@ cd wasmtime-mariadb-v0.1.11-macos-aarch64
 PORT=3307 ./scripts/run-server.sh
 ```
 
-Use `wasmtime-mariadb-v0.1.11-linux-x86_64` on Linux. The release archive
-contains the runner, server helpers, smoke tests, the Python benchmark, the
-60k workload, the durability-recovery test, and validation docs. It does not
-contain the MariaDB source tree or the MTR harness.
+Use `wasmtime-mariadb-v0.1.11-linux-x86_64` on Linux. Unix release archives
+contain the runner, its supervisor, server helpers, smoke tests, the Python
+benchmark, the 60k workload, the durability-recovery test, and validation
+docs. The Windows ZIP contains the runner, supervisor, PowerShell helpers,
+lifecycle test, and validation docs. Neither contains the MariaDB source tree
+or the MTR harness.
 
 ### macOS quarantine
 
@@ -109,19 +124,39 @@ From a source checkout or extracted release directory:
 RUN_DIR="$PWD/build/run" PORT=3307 ./scripts/run-server.sh
 ```
 
-The server runs in the foreground. Stop it with `Ctrl-C` only after it has
-reported `ready for connections`. The default run directory is `build/run`;
-use an explicit `RUN_DIR` when you want predictable data placement. The helper
-streams `RUN_DIR/mariadbd-runtime.err`, so first-start InnoDB initialization is
-visible instead of looking stuck. It can take up to a minute. `Ctrl-C` is an
-abrupt host stop, not a graceful MariaDB `COM_SHUTDOWN`; strict mode is tested
-to recover committed InnoDB work after that kind of stop.
+The server runs in the foreground. The helper starts a compiled supervisor,
+which owns the data-directory lock, metadata, child Wasmtime process, and
+signal handling. It streams `RUN_DIR/mariadbd-runtime.err`, so first-start
+InnoDB initialization is visible instead of looking stuck. It can take up to
+a minute. `Ctrl-C`, `SIGTERM`, and `SIGHUP` terminate the child as a process
+crash; strict mode is tested to recover committed InnoDB work after that path.
+
+On Windows PowerShell, use the matching entry point:
+
+```powershell
+$env:RUN_DIR = "$PWD\build\run"
+$env:PORT = '3307'
+.\scripts\run-server.ps1
+```
+
+For a controlled stop from another terminal, use the stop command. It asks
+MariaDB to shut down, waits for the Wasmtime host, then terminates only a host
+that remains stuck. This is bounded cleanup, not a promise that
+`COM_SHUTDOWN` is perfect in this port.
+
+```sh
+RUN_DIR="$PWD/build/run" ./scripts/stop-server.sh
+```
+
+```powershell
+.\scripts\stop-server.ps1 -RunDir "$PWD\build\run"
+```
 
 Do not use `Ctrl-C` as an initialization retry loop. An interruption before
-readiness can leave a partial local data directory. The helper identifies the
-common incomplete-bootstrap state and prints the exact `rm -rf RUN_DIR`
-command needed for a disposable clean retry. On any other nonzero exit it
-prints the last 80 runtime-log lines.
+readiness leaves the run manifest in `initializing` state and the next start
+refuses it. For disposable data, remove only that run directory and start
+again. The endpoint record at `RUN_DIR/.wasmtime-mariadb-endpoint.json` records
+the selected host, port, child PID, and `starting`/`ready`/`stopped` state.
 
 ### Durability and data-directory locking
 
@@ -139,11 +174,20 @@ DURABILITY=strict RUN_DIR="$PWD/build/site-db" PORT=3307 ./scripts/run-server.sh
 `--debug-no-sync` and changes InnoDB to flush its log every second. It is
 faster because it deliberately weakens crash durability.
 
-The helper holds an exclusive advisory lock at
+The supervisor holds `RUN_DIR/.wasmtime-mariadb-supervisor.lock` before it
+reads a manifest or starts MariaDB. The child runner also holds
 `RUN_DIR/.wasmtime-mariadb.lock` for its lifetime. Starting a second helper
-against the same `RUN_DIR` fails before MariaDB opens the data files. InnoDB
-also acquires host `F_SETLK` locks on its files. Do not bypass the helper with a
-raw runner invocation unless you pass an equivalent `--lock-file` yourself.
+against the same `RUN_DIR` therefore fails before MariaDB opens data files.
+InnoDB also acquires host file locks on its files. Do not bypass the helper
+with a raw runner invocation unless you accept the loss of these lifecycle and
+compatibility checks.
+
+The supervisor writes `RUN_DIR/.wasmtime-mariadb-run.json` only for a
+compatible MariaDB 11.4 local directory. A data directory with no manifest is
+rejected by default. Set `ADOPT_EXISTING_DATA=1` only after confirming that a
+complete existing directory belongs to this runner. `PORT=auto` asks the
+supervisor for an available loopback port and publishes it in the endpoint
+record.
 
 The checked process-crash contract is narrower than marketing-grade
 durability: acknowledged InnoDB commits survived a `SIGKILL` and restart on
@@ -238,6 +282,7 @@ These tests require a running server unless stated otherwise.
 | MySQL client smoke | `PORT=3307 ./scripts/test-mysql-client.sh` | TCP connection, InnoDB create/insert/read, `information_schema` engine lookup |
 | WordPress SQL smoke | `PORT=3307 ./scripts/test-wordpress-local-dev.sh` | WordPress-shaped schema, utf8mb4, LONGTEXT, indexes, transactions, routines, locale data |
 | Raw protocol benchmark smoke | `python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5` | Python implementation of the MySQL wire protocol can connect and issue SQL |
+| Supervisor lifecycle | `python3 scripts/test-supervisor-lifecycle.py` | Startup metadata, controlled-stop recovery, Unix signal cleanup, and Windows runner-crash recovery |
 | WordPress/WooCommerce integration | `WP_TESTS_DIR=/path/to/wordpress-tests-lib WOOCOMMERCE_DIR=/path/to/woocommerce ./scripts/test-wordpress-woocommerce-local-dev.sh` | Real WordPress/WooCommerce persistence against a configured upstream test environment |
 
 Set `HOST`, `PORT`, and `MYSQL` to override the smoke-test target and client.
@@ -347,6 +392,7 @@ The result is:
 
 ```text
 target/release/wasmtime-mariadb
+target/release/wasmtime-mariadb-supervisor
 ```
 
 `probe-mariadb-wasi-port.sh` is the expensive step. It copies a pinned
@@ -366,7 +412,7 @@ checkout. `build.rs` refuses to create a normal runner without a real MariaDB
 Wasm module. The only exception is the deliberately fake development fixture:
 
 ```sh
-cargo run --features dev-fixture
+cargo run --bin wasmtime-mariadb --features dev-fixture
 ```
 
 ## Regression-Test Methods
@@ -462,16 +508,18 @@ These are maintainer operations. They are not required to run the database.
 
 | Method | Command | Result |
 | --- | --- | --- |
-| Package an existing Wasmtime runner | `./scripts/package-release.sh vX.Y.Z linux-x86_64 target/release/wasmtime-mariadb` | Platform archive in `dist/` |
-| Build release runner locally | `MARIADBD_WASM=/path/to/mariadbd cargo build --release` | Wasmtime runner with embedded Wasm |
-| Build release assets in CI | `gh workflow run release-assets.yml --ref main -f tag=vX.Y.Z` | Linux x86_64 and macOS Apple Silicon archives, each smoke-tested before upload |
-| Install a release | `scripts/install-release.sh --version vX.Y.Z` | Verified extracted archive; run the printed `run-server.sh` command separately |
+| Package Linux/macOS release | `./scripts/package-release.sh vX.Y.Z linux-x86_64 target/release/wasmtime-mariadb` | Tarball with runner and supervisor |
+| Package Windows release | `./scripts/package-release.ps1 vX.Y.Z windows-x86_64 target/release/wasmtime-mariadb.exe` | ZIP with runner and supervisor |
+| Build release binaries locally | `MARIADBD_WASM=/path/to/mariadbd cargo build --release --bin wasmtime-mariadb --bin wasmtime-mariadb-supervisor` | Runner and supervisor with embedded Wasm |
+| Build release assets in CI | `gh workflow run release-assets.yml --ref main -f tag=vX.Y.Z` | Linux, macOS, and Windows archives, each lifecycle-tested before upload |
+| Install a Unix release | `scripts/install-release.sh --version vX.Y.Z` | Verified extraction and a printed run command |
+| Install a Windows release | `scripts/install-release.ps1 -Version vX.Y.Z` | Verified extraction and a printed PowerShell run command |
 
 The release workflow expects a `mariadbd-wasm.tar.gz` asset on the draft
-release before it runs. It builds only the Wasmtime host per target; the MariaDB
-Wasm module is the shared payload embedded into each host binary. Upload a
-`SHA256SUMS` file after both platform archives exist. Do not publish a release
-before that check works.
+release before it runs. It builds the runner and supervisor per target; the
+MariaDB Wasm module is the shared payload embedded into each runner. A final
+job generates `SHA256SUMS` after all three platform archives exist. Do not
+publish a release before that check works.
 
 ## Internal Helpers
 
@@ -495,8 +543,8 @@ hand is debugging, not a supported deployment method.
 - The normal runner uses `--skip-grant-tables`. There is no real user/password
   setup or privilege-table support.
 - It binds loopback in the documented command. Do not expose it to a network.
-- The normal helper has a host run-directory lock and InnoDB now calls host
-  `F_SETLK` locks. MyISAM/Aria-style external table locking is still disabled
+- The normal helper has supervisor and runner run-directory locks, and InnoDB
+  now calls host file locks. MyISAM/Aria-style external table locking is still disabled
   with `--skip-external-locking`; this runner claims InnoDB local development,
   not shared non-InnoDB data directories.
 - Strict mode has a process-crash recovery test, not a physical power-loss
@@ -504,15 +552,20 @@ hand is debugging, not a supported deployment method.
   XA recovery, replication, binlog, backup, and production durability remain
   unvalidated.
 - MariaDB `COM_SHUTDOWN` does not reliably terminate the Wasmtime host yet.
-  `Ctrl-C` uses the abrupt stop path and strict mode recovers it; do not treat
-  it as a clean checkpoint/shutdown API.
-- TLS, dynamic plugins, performance schema, OS signals, and normal auth are
-  disabled or unsupported in the documented runtime.
+  `stop-server` gives it a bounded grace period before terminating the child;
+  do not treat it as a clean checkpoint/shutdown API.
+- A forced supervisor crash can leave its child runner alive. The endpoint file
+  records that PID for diagnosis; use a normal signal or `stop-server` whenever
+  possible instead of killing the supervisor.
+- TLS, dynamic plugins, performance schema, guest OS signals, and normal auth
+  are disabled or unsupported in the documented runtime.
+- Windows supports the local TCP path, not the Unix-socket MTR harness.
 - `idle_transaction_timeout` does not disconnect an idle transaction as the
   upstream test expects.
 - The full malformed-FK/restart/recovery `innodb.foreign_key` fixture can
-  trap a Wasmtime InnoDB purge thread. Normal foreign-key DDL is covered; that
-  recovery path is not.
+  trap a Wasmtime InnoDB purge thread. A non-routine worker trap now fails the
+  host instead of letting MariaDB continue with shared memory in doubt, but
+  that recovery path remains unsupported.
 - `SHOW ENGINE INNODB STATUS` is a minimal WASI fallback, not full monitor
   output. The detailed `innodb.gap_locks` diagnostic assertion does not pass.
 - Malformed SFORMAT input can abort a Wasm server thread.
@@ -535,6 +588,16 @@ guest. Keep those two layers separate when debugging.
  patched mariadbd WebAssembly module
               |
               | build.rs embeds the module bytes
+              v
+ run-server / run-server.ps1
+              |
+              v
+ wasmtime-mariadb-supervisor
+              |
+              +-- private run directory and compatibility manifest
+              +-- endpoint record, lifecycle lock, Ctrl-C/TERM control
+              +-- controlled shutdown, then bounded child termination
+              |
               v
  Wasmtime wasmtime-mariadb executable
               |
@@ -564,9 +627,12 @@ to a separate `.wasm` file.
 
 ### Runtime path
 
-`run-server.sh` creates `RUN_DIR/data` and `RUN_DIR/tmp`, copies the minimal
-system-table bootstrap, then starts the Wasmtime host from `RUN_DIR/data`. It
-preopens the host `RUN_DIR` as guest `/tmp`. MariaDB therefore sees:
+`run-server.sh` and `run-server.ps1` are deliberately thin wrappers around the
+supervisor. The supervisor creates `RUN_DIR/data` and `RUN_DIR/tmp`, takes its
+own lifecycle lock before it reads the manifest, copies the minimal
+system-table bootstrap, writes an endpoint record, then starts the Wasmtime
+host from `RUN_DIR/data`. It preopens the host `RUN_DIR` as guest `/tmp`.
+MariaDB therefore sees:
 
 ```text
 guest /tmp/data                    host RUN_DIR/data
@@ -590,9 +656,9 @@ live inside MariaDB's shared guest memory. They were always real and are what
 the concurrent MTR and 60k workloads exercised. That is unrelated to OS file
 locking: file locks stop two server *processes* from opening the same data
 directory. The old WASI port returned success from that file-lock call. The
-current port routes InnoDB's whole-file lock through `HostFiles` to host
-`F_SETLK`, while `run-server.sh` also holds a separate `flock` lock on the run
-directory before MariaDB starts. The two layers cover different failures.
+current port routes InnoDB's whole-file lock through `HostFiles` to the host.
+The supervisor lock closes the startup window before the runner acquires its
+separate lifetime lock. Those layers cover different failures.
 
 In strict mode, the same file bridge routes InnoDB `fdatasync` and `fsync`
 calls to the host filesystem. In relaxed mode, MariaDB's `--debug-no-sync`
@@ -630,7 +696,7 @@ and conditions for a real migration are in
 MTR does not run inside the release binary. The external harness starts the
 same runner, fronts it with stable TCP/Unix proxies, watches MTR restart
 requests, and preserves per-test results. The release workflow downloads the
-same `mariadbd-wasm` payload, embeds it into Linux and macOS Wasmtime hosts,
-runs TCP/MySQL/WordPress smokes, packages the assets, and publishes checksums.
-That is the chain. There is no hidden daemon, container, or database service
-behind it.
+same `mariadbd-wasm` payload, embeds it into Linux, macOS, and Windows runners,
+runs platform lifecycle acceptance plus Unix TCP/MySQL/WordPress smokes,
+packages the assets, and publishes checksums. That is the chain. There is no
+hidden daemon, container, or database service behind it.

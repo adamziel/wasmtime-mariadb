@@ -434,12 +434,11 @@ fn stop_child(child: &mut Child, host: IpAddr, port: u16, mode: StopMode) -> Res
         return terminate_child(child);
     }
 
-    match mysql_shutdown(host, port) {
-        Ok(()) => eprintln!("requested MariaDB protocol shutdown"),
-        Err(err) => eprintln!(
-            "MariaDB protocol shutdown unavailable; falling back to host termination: {err}"
-        ),
+    if let Err(err) = mysql_shutdown(host, port) {
+        eprintln!("MariaDB protocol shutdown unavailable; terminating the host: {err}");
+        return terminate_child(child);
     }
+    eprintln!("requested MariaDB protocol shutdown");
 
     let deadline = Instant::now() + SHUTDOWN_GRACE_PERIOD;
     while Instant::now() < deadline {

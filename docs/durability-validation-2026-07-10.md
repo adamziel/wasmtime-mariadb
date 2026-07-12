@@ -28,8 +28,10 @@ same tablespace. The current build does both of these:
 
 - Routes InnoDB's whole-file `F_SETLK` call through `HostFiles` to the host
   file descriptor.
-- Makes `run-server.sh` hold a separate nonblocking `flock` lock at
-  `RUN_DIR/.wasmtime-mariadb.lock` for the Wasmtime runner lifetime.
+- Makes the supervisor hold a nonblocking setup lock at
+  `RUN_DIR/.wasmtime-mariadb-supervisor.lock` before it reads the manifest,
+  while the Wasmtime runner holds `RUN_DIR/.wasmtime-mariadb.lock` for its
+  lifetime.
 
 The run-directory lock is the hard guard for the supported launch path. It
 also avoids relying on subtle per-process `fcntl` semantics when a guest opens
@@ -116,8 +118,9 @@ kernel writeback policy, background load, and MariaDB version all matter.
 ## Remaining boundary
 
 `COM_SHUTDOWN` does not reliably tear down the Wasmtime-hosted server yet.
-The foreground helper's `Ctrl-C` path stops the Wasmtime host rather than asking
-MariaDB for a clean checkpoint. Strict mode has the crash-recovery evidence
-above; it is not a graceful-shutdown API. A Studio integration should manage
-server lifetime with that distinction in mind and should not expose the data
-directory to another process.
+The supervisor's explicit stop command asks MariaDB first, waits for a bounded
+grace period, then terminates a host that remains stuck. `Ctrl-C`, `SIGTERM`,
+and `SIGHUP` take the process-crash path immediately. Strict mode has the
+crash-recovery evidence above; neither path is a clean-checkpoint API. A Studio
+integration should manage server lifetime with that distinction in mind and
+should not expose the data directory to another process.

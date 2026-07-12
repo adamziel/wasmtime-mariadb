@@ -223,13 +223,23 @@ def main():
             endpoint = None
             print("sigterm_lifecycle=pass")
         else:
+            runner_pid = endpoint["pid"]
+            os.kill(runner_pid, signal.SIGTERM)
+            status = wait_for_exit(process, INTERRUPT_TIMEOUT_SECONDS, "Windows supervisor after runner termination")
+            if status == 0:
+                raise RuntimeError("Windows supervisor hid an abrupt runner termination")
+            process = None
+            endpoint = None
+
+            process, endpoint, _ = start_supervisor(args, run_dir, 3)
+            verify_recovery(mysql_client, endpoint)
             request_stop(args, run_dir)
             status = wait_for_exit(process, STOP_TIMEOUT_SECONDS, "Windows supervisor after stop request")
             if status != 0:
                 raise RuntimeError(f"Windows supervisor stop returned {status}")
             process = None
             endpoint = None
-            print("windows_control_stop=pass")
+            print("windows_runner_crash_recovery=pass")
     finally:
         force_cleanup(process, endpoint)
 
