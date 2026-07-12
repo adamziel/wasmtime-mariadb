@@ -10,6 +10,9 @@ use std::thread;
 #[cfg(unix)]
 use rustix::fs::{FlockOperation, flock};
 
+#[cfg(windows)]
+use fs4::{FileExt as Fs4FileExt, TryLockError};
+
 use clap::Parser;
 use wasmtime::error::Context as _;
 use wasmtime::{
@@ -20,6 +23,10 @@ use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtxBuilder};
 
 mod guest_abi;
 mod host_files;
+#[cfg(not(windows))]
+mod host_sockets;
+#[cfg(windows)]
+#[path = "host_sockets_windows.rs"]
 mod host_sockets;
 
 const MARIADBD_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mariadbd.wasm"));
@@ -266,11 +273,28 @@ fn acquire_data_dir_lock(path: Option<&Path>) -> Result<Option<DataDirLock>> {
         Ok(Some(DataDirLock { _file: file }))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        match Fs4FileExt::try_lock(&file) {
+            Ok(()) => Ok(Some(DataDirLock { _file: file })),
+            Err(TryLockError::WouldBlock) => bail!(
+                "MariaDB data directory is already in use; another wasmtime-mariadb runner holds {}",
+                path.display()
+            ),
+            Err(TryLockError::Error(err)) => Err(err).with_context(|| {
+                format!(
+                    "failed to acquire MariaDB data-directory lock {}",
+                    path.display()
+                )
+            }),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         drop(file);
         bail!(
-            "--lock-file is currently supported only on Unix hosts: {}",
+            "--lock-file is not supported on this host: {}",
             path.display()
         );
     }
@@ -396,14 +420,24 @@ fn spawn_wasi_thread(runtime: Arc<RuntimeEnv>, start_arg: i32) -> i32 {
         .spawn(move || {
             if let Err(err) = run_wasi_thread(runtime, thread_id, start_arg) {
                 let details = format!("{err:#}");
-                if !details.contains("wasmtime_mariadb_pthread_exit") {
-                    eprintln!("error: WASI thread {thread_id} failed: {details}");
+                if !is_expected_thread_exit(&details) {
+                    // The guest shares memory across every MariaDB worker. A
+                    // trapped worker can leave those structures inconsistent,
+                    // so keep the failure visible and let InnoDB recovery run
+                    // on the next supervisor-managed start.
+                    eprintln!("fatal: WASI thread {thread_id} failed: {details}");
+                    std::process::exit(70);
                 }
             }
         }) {
         Ok(_) => thread_id,
         Err(_) => -libc::EAGAIN,
     }
+}
+
+/// Identifies the intentional trap used by the current guest pthread-exit shim.
+fn is_expected_thread_exit(details: &str) -> bool {
+    details.contains("wasmtime_mariadb_pthread_exit")
 }
 
 fn run_wasi_thread(runtime: Arc<RuntimeEnv>, thread_id: i32, start_arg: i32) -> Result<()> {
@@ -499,5 +533,11 @@ mod tests {
         .unwrap();
         assert_eq!(cli.lock_file, Some(PathBuf::from("/tmp/mariadb.lock")));
         assert_eq!(cli.guest_args, ["--no-defaults"]);
+    }
+
+    #[test]
+    fn distinguishes_expected_and_fatal_thread_traps() {
+        assert!(is_expected_thread_exit("wasmtime_mariadb_pthread_exit"));
+        assert!(!is_expected_thread_exit("out of bounds memory access"));
     }
 }

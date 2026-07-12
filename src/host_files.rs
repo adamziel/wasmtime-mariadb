@@ -7,8 +7,14 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
 
+#[cfg(windows)]
+use std::os::windows::fs::FileExt as WindowsFileExt;
+
 #[cfg(unix)]
 use rustix::fs::{FlockOperation, fcntl_lock};
+
+#[cfg(windows)]
+use fs4::{FileExt as Fs4FileExt, TryLockError};
 
 use wasmtime::{Caller, Linker, Result};
 
@@ -175,13 +181,13 @@ impl HostFiles {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn pread(&self, fd: i32, buf: &mut [u8], offset: u64) -> i32 {
         let inner = self.inner.lock().unwrap();
         let Some(host_file) = inner.files.get(&fd) else {
             return neg_errno(libc::EBADF);
         };
-        match host_file.file.read_at(buf, offset) {
+        match positioned_read(&host_file.file, buf, offset) {
             Ok(n) => {
                 file_trace(format_args!(
                     "pread fd={fd} path={} len={} offset={offset} rc={n}",
@@ -228,13 +234,13 @@ impl HostFiles {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn pwrite(&self, fd: i32, buf: &[u8], offset: u64) -> i32 {
         let inner = self.inner.lock().unwrap();
         let Some(host_file) = inner.files.get(&fd) else {
             return neg_errno(libc::EBADF);
         };
-        match host_file.file.write_at(buf, offset) {
+        match positioned_write(&host_file.file, buf, offset) {
             Ok(n) => {
                 file_trace(format_args!(
                     "pwrite fd={fd} path={} len={} offset={offset} rc={n}",
@@ -354,13 +360,14 @@ impl HostFiles {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn lock_exclusive(&self, fd: i32) -> i32 {
         let inner = self.inner.lock().unwrap();
         let Some(host_file) = inner.files.get(&fd) else {
             return neg_errno(libc::EBADF);
         };
 
+        #[cfg(unix)]
         match fcntl_lock(&host_file.file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {
                 file_trace(format_args!(
@@ -378,9 +385,36 @@ impl HostFiles {
                 neg_errno(errno)
             }
         }
+
+        #[cfg(windows)]
+        match Fs4FileExt::try_lock(&host_file.file) {
+            Ok(()) => {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} rc=0",
+                    host_file.path.display()
+                ));
+                0
+            }
+            Err(TryLockError::WouldBlock) => {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={}",
+                    host_file.path.display(),
+                    libc::EAGAIN
+                ));
+                neg_errno(libc::EAGAIN)
+            }
+            Err(TryLockError::Error(err)) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={errno}",
+                    host_file.path.display()
+                ));
+                neg_errno(errno)
+            }
+        }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn fstat(&self, fd: i32) -> std::result::Result<HostFileStat, i32> {
         let inner = self.inner.lock().unwrap();
         let Some(host_file) = inner.files.get(&fd) else {
@@ -389,7 +423,7 @@ impl HostFiles {
         stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn stat(&self, guest_path: &str) -> std::result::Result<HostFileStat, i32> {
         let host_path = self.resolve(guest_path)?;
         stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
@@ -422,7 +456,7 @@ impl HostFiles {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
     linker.func_wrap(
         MODULE_NAME,
@@ -622,9 +656,9 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn add_to_linker(_linker: &mut Linker<AppState>) -> Result<()> {
-    // Release builds support Unix hosts only; the fixture can still instantiate.
+    // The fixture can still instantiate on unsupported hosts.
     Ok(())
 }
 
@@ -639,6 +673,27 @@ fn stat_from_metadata(metadata: Metadata) -> std::result::Result<HostFileStat, i
         atime: metadata.atime(),
         mtime: metadata.mtime(),
         ctime: metadata.ctime(),
+    })
+}
+
+#[cfg(windows)]
+fn stat_from_metadata(metadata: Metadata) -> std::result::Result<HostFileStat, i32> {
+    let size = i64::try_from(metadata.len()).map_err(|_| libc::EOVERFLOW)?;
+    let blocks = size.saturating_add(4095) / 4096;
+    let mode = if metadata.is_dir() {
+        libc::S_IFDIR | libc::S_IREAD | libc::S_IWRITE
+    } else {
+        libc::S_IFREG | libc::S_IREAD | libc::S_IWRITE
+    };
+    Ok(HostFileStat {
+        size,
+        blocks,
+        block_size: 4096,
+        dev: 0,
+        mode,
+        atime: system_time_seconds(metadata.accessed()),
+        mtime: system_time_seconds(metadata.modified()),
+        ctime: system_time_seconds(metadata.created()),
     })
 }
 
@@ -685,7 +740,7 @@ fn join_suffix(root: &Path, suffix: &str) -> PathBuf {
     path
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn write_file_stat(
     caller: &mut Caller<'_, AppState>,
     stat: HostFileStat,
@@ -710,11 +765,92 @@ fn write_file_stat(
     Ok(())
 }
 
+/// Reads at an explicit offset without changing MariaDB's shared file cursor.
+#[cfg(unix)]
+fn positioned_read(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.read_at(buf, offset)
+}
+
+/// Uses Windows' positional read operation for the same guest ABI contract.
+#[cfg(windows)]
+fn positioned_read(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_read(buf, offset)
+}
+
+/// Writes at an explicit offset without changing MariaDB's shared file cursor.
+#[cfg(unix)]
+fn positioned_write(file: &File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
+    file.write_at(buf, offset)
+}
+
+/// Uses Windows' positional write operation for the same guest ABI contract.
+#[cfg(windows)]
+fn positioned_write(file: &File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_write(buf, offset)
+}
+
+/// Converts optional Windows metadata timestamps into the guest's Unix seconds.
+#[cfg(windows)]
+fn system_time_seconds(value: std::io::Result<std::time::SystemTime>) -> i64 {
+    value
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or(0)
+}
+
 fn io_error_from_errno(errno: i32) -> std::io::Error {
+    #[cfg(unix)]
+    {
+        return std::io::Error::from_raw_os_error(errno);
+    }
+
+    #[cfg(windows)]
+    {
+        let kind = match errno {
+            libc::EACCES | libc::EPERM => std::io::ErrorKind::PermissionDenied,
+            libc::EAGAIN | libc::EWOULDBLOCK => std::io::ErrorKind::WouldBlock,
+            libc::EEXIST => std::io::ErrorKind::AlreadyExists,
+            libc::EINVAL => std::io::ErrorKind::InvalidInput,
+            libc::ENOENT => std::io::ErrorKind::NotFound,
+            libc::ENOSPC => std::io::ErrorKind::StorageFull,
+            _ => std::io::ErrorKind::Other,
+        };
+        return std::io::Error::from(kind);
+    }
+
+    #[allow(unreachable_code)]
     std::io::Error::from_raw_os_error(errno)
 }
 
 fn io_errno(err: std::io::Error) -> i32 {
+    #[cfg(unix)]
+    {
+        return err.raw_os_error().unwrap_or(libc::EIO);
+    }
+
+    #[cfg(windows)]
+    {
+        return match err.kind() {
+            std::io::ErrorKind::NotFound => libc::ENOENT,
+            std::io::ErrorKind::PermissionDenied => libc::EACCES,
+            std::io::ErrorKind::ConnectionRefused => libc::ECONNREFUSED,
+            std::io::ErrorKind::ConnectionReset => libc::ECONNRESET,
+            std::io::ErrorKind::ConnectionAborted => libc::ECONNABORTED,
+            std::io::ErrorKind::NotConnected => libc::ENOTCONN,
+            std::io::ErrorKind::AddrInUse => libc::EADDRINUSE,
+            std::io::ErrorKind::AddrNotAvailable => libc::EADDRNOTAVAIL,
+            std::io::ErrorKind::BrokenPipe => libc::EPIPE,
+            std::io::ErrorKind::AlreadyExists => libc::EEXIST,
+            std::io::ErrorKind::WouldBlock => libc::EAGAIN,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => libc::EINVAL,
+            std::io::ErrorKind::TimedOut => libc::ETIMEDOUT,
+            std::io::ErrorKind::WriteZero | std::io::ErrorKind::StorageFull => libc::ENOSPC,
+            _ => libc::EIO,
+        };
+    }
+
+    #[allow(unreachable_code)]
     err.raw_os_error().unwrap_or(libc::EIO)
 }
 
