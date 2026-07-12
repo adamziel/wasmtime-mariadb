@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
+
+#[cfg(unix)]
+use rustix::fs::{FlockOperation, fcntl_lock};
 
 use wasmtime::{Caller, Linker, Result};
 
@@ -375,26 +376,22 @@ impl HostFiles {
                 return neg_errno(libc::EBADF);
             };
 
-            let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-            lock.l_type = libc::F_WRLCK as _;
-            lock.l_whence = libc::SEEK_SET as _;
-            lock.l_start = 0;
-            lock.l_len = 0;
-
-            let result = unsafe { libc::fcntl(host_file.file.as_raw_fd(), libc::F_SETLK, &lock) };
-            if result == 0 {
-                file_trace(format_args!(
-                    "lock_exclusive fd={fd} path={} rc=0",
-                    host_file.path.display()
-                ));
-                0
-            } else {
-                let errno = io_errno(std::io::Error::last_os_error());
-                file_trace(format_args!(
-                    "lock_exclusive fd={fd} path={} errno={errno}",
-                    host_file.path.display()
-                ));
-                neg_errno(errno)
+            match fcntl_lock(&host_file.file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => {
+                    file_trace(format_args!(
+                        "lock_exclusive fd={fd} path={} rc=0",
+                        host_file.path.display()
+                    ));
+                    0
+                }
+                Err(err) => {
+                    let errno = err.raw_os_error();
+                    file_trace(format_args!(
+                        "lock_exclusive fd={fd} path={} errno={errno}",
+                        host_file.path.display()
+                    ));
+                    neg_errno(errno)
+                }
             }
         }
         #[cfg(not(unix))]

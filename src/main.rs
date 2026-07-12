@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
+use rustix::fs::{FlockOperation, flock};
 
 use clap::Parser;
 use wasmtime::error::Context as _;
@@ -248,17 +248,15 @@ fn acquire_data_dir_lock(path: Option<&Path>) -> Result<Option<DataDirLock>> {
 
     #[cfg(unix)]
     {
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            let errno = error.raw_os_error();
-            if errno == Some(libc::EAGAIN) || errno == Some(libc::EWOULDBLOCK) {
+        if let Err(err) = flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            let errno = err.raw_os_error();
+            if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
                 bail!(
                     "MariaDB data directory is already in use; another wasmtime-mariadb runner holds {}",
                     path.display()
                 );
             }
-            return Err(error).with_context(|| {
+            return Err(std::io::Error::from(err)).with_context(|| {
                 format!(
                     "failed to acquire MariaDB data-directory lock {}",
                     path.display()
