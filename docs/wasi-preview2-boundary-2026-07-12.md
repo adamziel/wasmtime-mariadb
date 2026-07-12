@@ -107,9 +107,10 @@ Two changes are valid independently of the migration boundary:
 - Host `EDQUOT` now maps to the guest's `ENOSPC` error. A quota failure should
   say disk space is unavailable, not masquerade as MariaDB error 122.
 - `guest_abi.rs` owns the repeated raw-pointer copies, bounds checks, and
-  Preview 1 errno conversion used by both bridges. It removes 256 duplicate
-  runner lines (2,752 to 2,496) without touching the required cross-thread
-  descriptor ownership.
+  Preview 1 errno conversion used by both bridges. Together with the
+  Unix-only linker boundary and shared bridge marshalling, the runner is now
+  2,386 lines, down from 2,751 on `main`, without touching the required
+  cross-thread descriptor ownership.
 
 ## Validation
 

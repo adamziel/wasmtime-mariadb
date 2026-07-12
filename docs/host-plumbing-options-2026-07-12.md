@@ -54,16 +54,16 @@ direct experiment is documented in
 [`wasi-preview2-boundary-2026-07-12.md`](wasi-preview2-boundary-2026-07-12.md).
 It made InnoDB and DDL writes fail with bad file descriptors.
 
-The present custom Rust runner is 2,496 lines:
+The present custom Rust runner is 2,386 lines:
 
 | Area | Lines | What it owns |
 | --- | ---: | --- |
-| `src/main.rs` | 505 | Wasmtime setup, shared memory, guest pthread startup, process lock |
-| `src/host_files.rs` | 767 | Shared descriptors, preopen path mapping, sync, InnoDB file lock |
-| `src/host_sockets.rs` | 973 | Shared listener and client descriptors, TCP, poll, options |
+| `src/main.rs` | 503 | Wasmtime setup, shared memory, guest pthread startup, process lock |
+| `src/host_files.rs` | 725 | Shared descriptors, preopen path mapping, sync, InnoDB file lock |
+| `src/host_sockets.rs` | 907 | Shared listener and client descriptors, TCP, poll, options |
 | `src/guest_abi.rs` | 251 | Checked guest-memory access and errno translation |
 
-The file/socket bridge and guest ABI are 1,991 lines. They exist for a real
+The file/socket bridge and guest ABI are 1,883 lines. They exist for a real
 runtime contract, not because ordinary filesystem or socket APIs were missed.
 
 ## What WASI Preview 2 changes
@@ -107,7 +107,7 @@ and [the wasi-threads/component-model boundary](https://github.com/WebAssembly/W
 | --- | --- | --- | --- | --- |
 | Current Wasmtime runner | Yes, validated | Nothing architectural | The bridge remains required | Keep it |
 | `wasmtime-wasi-threads` | Not safely | A little thread-spawn code | Requires cloneable store data, still creates a fresh store per guest thread, and exits the whole process on a guest-thread trap. Wasmtime 45 warns that `wasi-threads` is slated for removal in 47. | Reject |
-| WAMR | No | Potentially most of the 1,991 bridge lines | Modern exception handling is unimplemented; current module fails to load. Socket ABI differs; lock extension remains. | Track, do not port now |
+| WAMR | No | Potentially most of the 1,883 bridge lines | Modern exception handling is unimplemented; current module fails to load. Socket ABI differs; lock extension remains. | Track, do not port now |
 | Wazero + wasi-go | Not without a Go rewrite | Potentially standard P1 file/socket work | No `wasi.thread-spawn`; manual TLS setup; wasi-go Unix system is not concurrent-safe; socket ABI differs; record lock remains. | Feasibility spike only |
 | uvwasi | No | None without writing a new runtime bridge | It is a P1 syscall library, not a Wasm runtime or wasi-threads host; it lacks the POSIX listener-creation surface needed here. | Reject |
 | WasmEdge | No | None | The project says it is not yet thread-safe. | Reject |
@@ -233,7 +233,7 @@ passed, not merely start `mariadbd`:
 5. The four-client 60k-query workload, including 3k commits, with no lost
    queries or hangs.
 
-Until an alternative clears that bar, the 1,991 bridge lines are cheaper than
+Until an alternative clears that bar, the 1,883 bridge lines are cheaper than
 an unproven database runtime.
 
 ## Supporting sources
