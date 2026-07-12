@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=MARIADBD_WASM");
@@ -49,7 +49,7 @@ fn main() {
     );
 }
 
-fn validate_wasm(wasm: &[u8], path: &PathBuf) {
+fn validate_wasm(wasm: &[u8], path: &Path) {
     if !wasm.starts_with(b"\0asm") {
         panic!(
             "MARIADBD_WASM at {} is not a WebAssembly binary; expected magic bytes 00 61 73 6d",

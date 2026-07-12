@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
@@ -12,12 +11,13 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 
 use wasmtime::{Caller, Linker, Result};
 
-use crate::{AppState, Cli, Preopen};
+use crate::{
+    AppState, Cli, Preopen,
+    guest_abi::{self, neg_errno},
+};
 
 const MODULE_NAME: &str = "wasmtime_mariadb_files";
 const GUEST_FD_BASE: i32 = 20_000;
-const MAX_IO_LEN: usize = 16 * 1024 * 1024;
-const MAX_PATH_LEN: usize = 16 * 1024;
 
 const POSIX_O_ACCMODE: i32 = 0o3;
 const POSIX_O_WRONLY: i32 = 0o1;
@@ -34,38 +34,6 @@ const WASI_O_EXCL: i32 = 0x0004 << 12;
 const WASI_O_TRUNC: i32 = 0x0008 << 12;
 const WASI_O_RDONLY: i32 = 0x0400_0000;
 const WASI_O_WRONLY: i32 = 0x1000_0000;
-const WASI_ERRNO_ACCES: i32 = 2;
-const WASI_ERRNO_AGAIN: i32 = 6;
-const WASI_ERRNO_BADF: i32 = 8;
-const WASI_ERRNO_BUSY: i32 = 10;
-const WASI_ERRNO_EXIST: i32 = 20;
-const WASI_ERRNO_FAULT: i32 = 21;
-const WASI_ERRNO_FBIG: i32 = 22;
-const WASI_ERRNO_INTR: i32 = 27;
-const WASI_ERRNO_INVAL: i32 = 28;
-const WASI_ERRNO_IO: i32 = 29;
-const WASI_ERRNO_ISDIR: i32 = 31;
-const WASI_ERRNO_LOOP: i32 = 32;
-const WASI_ERRNO_MFILE: i32 = 33;
-const WASI_ERRNO_NAMETOOLONG: i32 = 37;
-const WASI_ERRNO_NFILE: i32 = 41;
-const WASI_ERRNO_NODEV: i32 = 43;
-const WASI_ERRNO_NOENT: i32 = 44;
-const WASI_ERRNO_NOMEM: i32 = 48;
-const WASI_ERRNO_NOSPC: i32 = 51;
-const WASI_ERRNO_NOSYS: i32 = 52;
-const WASI_ERRNO_NOTDIR: i32 = 54;
-const WASI_ERRNO_NOTEMPTY: i32 = 55;
-const WASI_ERRNO_NOTSUP: i32 = 58;
-const WASI_ERRNO_NXIO: i32 = 60;
-const WASI_ERRNO_OVERFLOW: i32 = 61;
-const WASI_ERRNO_PERM: i32 = 63;
-const WASI_ERRNO_PIPE: i32 = 64;
-const WASI_ERRNO_ROFS: i32 = 69;
-const WASI_ERRNO_SPIPE: i32 = 70;
-const WASI_ERRNO_TXTBSY: i32 = 74;
-const WASI_ERRNO_XDEV: i32 = 75;
-const WASI_ENOTCAPABLE: i32 = 76;
 
 #[derive(Clone)]
 pub(crate) struct HostFiles {
@@ -117,7 +85,7 @@ impl HostFiles {
             });
         }
 
-        preopens.sort_by(|left, right| right.guest.len().cmp(&left.guest.len()));
+        preopens.sort_by_key(|preopen| std::cmp::Reverse(preopen.guest.len()));
 
         Ok(Self {
             inner: Arc::new(Mutex::new(HostFilesInner {
@@ -488,7 +456,7 @@ impl HostFiles {
             return Ok(join_suffix(&preopen.host, suffix));
         }
 
-        Err(WASI_ENOTCAPABLE)
+        Err(guest_abi::ERRNO_NOTCAPABLE)
     }
 }
 
@@ -497,7 +465,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "open",
         |mut caller: Caller<'_, AppState>, path_ptr: i32, flags: i32, mode: i32| -> i32 {
-            let path = match read_cstr(&mut caller, path_ptr) {
+            let path = match guest_abi::read_cstr(&mut caller, path_ptr) {
                 Ok(path) => path,
                 Err(errno) => return neg_errno(errno),
             };
@@ -515,7 +483,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "pread",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32, offset: i64| -> i32 {
-            let len = match checked_len(len) {
+            let len = match guest_abi::checked_len(len) {
                 Ok(len) => len,
                 Err(errno) => return neg_errno(errno),
             };
@@ -524,7 +492,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
             if rc <= 0 {
                 return rc;
             }
-            match write_guest(&mut caller, buf_ptr, &buf[..rc as usize]) {
+            match guest_abi::write(&mut caller, buf_ptr, &buf[..rc as usize]) {
                 Ok(()) => rc,
                 Err(errno) => neg_errno(errno),
             }
@@ -535,7 +503,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "read",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32| -> i32 {
-            let len = match checked_len(len) {
+            let len = match guest_abi::checked_len(len) {
                 Ok(len) => len,
                 Err(errno) => return neg_errno(errno),
             };
@@ -544,7 +512,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
             if rc <= 0 {
                 return rc;
             }
-            match write_guest(&mut caller, buf_ptr, &buf[..rc as usize]) {
+            match guest_abi::write(&mut caller, buf_ptr, &buf[..rc as usize]) {
                 Ok(()) => rc,
                 Err(errno) => neg_errno(errno),
             }
@@ -555,7 +523,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "pwrite",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32, offset: i64| -> i32 {
-            let buf = match read_guest(&mut caller, buf_ptr, len) {
+            let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                 Ok(buf) => buf,
                 Err(errno) => return neg_errno(errno),
             };
@@ -567,7 +535,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "write",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32| -> i32 {
-            let buf = match read_guest(&mut caller, buf_ptr, len) {
+            let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                 Ok(buf) => buf,
                 Err(errno) => return neg_errno(errno),
             };
@@ -669,7 +637,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
          mtime_ptr: i32,
          ctime_ptr: i32|
          -> i32 {
-            let path = match read_cstr(&mut caller, path_ptr) {
+            let path = match guest_abi::read_cstr(&mut caller, path_ptr) {
                 Ok(path) => path,
                 Err(errno) => return neg_errno(errno),
             };
@@ -737,7 +705,7 @@ fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {
             "" | "." => {}
             ".." => {
                 if parts.pop().is_none() {
-                    return Err(WASI_ENOTCAPABLE);
+                    return Err(guest_abi::ERRNO_NOTCAPABLE);
                 }
             }
             part => parts.push(part),
@@ -758,8 +726,8 @@ fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {
     }
 }
 
-fn join_suffix(root: &PathBuf, suffix: &str) -> PathBuf {
-    let mut path = root.clone();
+fn join_suffix(root: &Path, suffix: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
     for component in suffix.split('/') {
         if !component.is_empty() && component != "." {
             path.push(component);
@@ -768,130 +736,12 @@ fn join_suffix(root: &PathBuf, suffix: &str) -> PathBuf {
     path
 }
 
-fn read_cstr(caller: &mut Caller<'_, AppState>, ptr: i32) -> std::result::Result<String, i32> {
-    let start = usize::try_from(ptr).map_err(|_| libc::EFAULT)?;
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data(&mut *caller);
-        if start >= data.len() {
-            return Err(libc::EFAULT);
-        }
-        let max_end = start.saturating_add(MAX_PATH_LEN).min(data.len());
-        let Some(end) = data[start..max_end].iter().position(|byte| *byte == 0) else {
-            return Err(libc::ENAMETOOLONG);
-        };
-        return std::str::from_utf8(&data[start..start + end])
-            .map(str::to_owned)
-            .map_err(|_| libc::EINVAL);
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        if start >= data.len() {
-            return Err(libc::EFAULT);
-        }
-        let max_end = start.saturating_add(MAX_PATH_LEN).min(data.len());
-        let mut bytes = Vec::new();
-        for cell in &data[start..max_end] {
-            let byte = unsafe { *cell.get() };
-            if byte == 0 {
-                return String::from_utf8(bytes).map_err(|_| libc::EINVAL);
-            }
-            bytes.push(byte);
-        }
-        return Err(libc::ENAMETOOLONG);
-    }
-
-    Err(libc::EFAULT)
-}
-
-fn checked_range(ptr: i32, len: i32, memory_len: usize) -> std::result::Result<Range<usize>, i32> {
-    let ptr = usize::try_from(ptr).map_err(|_| libc::EFAULT)?;
-    let len = checked_len(len)?;
-    let end = ptr.checked_add(len).ok_or(libc::EFAULT)?;
-    if end > memory_len {
-        return Err(libc::EFAULT);
-    }
-    Ok(ptr..end)
-}
-
-fn checked_len(len: i32) -> std::result::Result<usize, i32> {
-    let len = usize::try_from(len).map_err(|_| libc::EINVAL)?;
-    if len > MAX_IO_LEN {
-        return Err(libc::EINVAL);
-    }
-    Ok(len)
-}
-
-fn read_guest(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    len: i32,
-) -> std::result::Result<Vec<u8>, i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data(&mut *caller);
-        let range = checked_range(ptr, len, data.len())?;
-        return Ok(data[range].to_vec());
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(ptr, len, data.len())?;
-        let mut bytes = Vec::with_capacity(range.len());
-        for cell in &data[range] {
-            bytes.push(unsafe { *cell.get() });
-        }
-        return Ok(bytes);
-    }
-
-    Err(libc::EFAULT)
-}
-
-fn write_guest(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    bytes: &[u8],
-) -> std::result::Result<(), i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data_mut(&mut *caller);
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        data[range].copy_from_slice(bytes);
-        return Ok(());
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        for (cell, byte) in data[range].iter().zip(bytes) {
-            unsafe {
-                *cell.get() = *byte;
-            }
-        }
-        return Ok(());
-    }
-
-    Err(libc::EFAULT)
-}
-
 fn write_i32(
     caller: &mut Caller<'_, AppState>,
     ptr: i32,
     value: i32,
 ) -> std::result::Result<(), i32> {
-    write_guest(caller, ptr, &value.to_le_bytes())
+    guest_abi::write(caller, ptr, &value.to_le_bytes())
 }
 
 fn write_i64(
@@ -899,7 +749,7 @@ fn write_i64(
     ptr: i32,
     value: i64,
 ) -> std::result::Result<(), i32> {
-    write_guest(caller, ptr, &value.to_le_bytes())
+    guest_abi::write(caller, ptr, &value.to_le_bytes())
 }
 
 fn io_error_from_errno(errno: i32) -> std::io::Error {
@@ -910,124 +760,8 @@ fn io_errno(err: std::io::Error) -> i32 {
     err.raw_os_error().unwrap_or(libc::EIO)
 }
 
-fn neg_errno(errno: i32) -> i32 {
-    -errno_for_guest(errno)
-}
-
-fn errno_for_guest(errno: i32) -> i32 {
-    if errno == libc::EACCES {
-        return WASI_ERRNO_ACCES;
-    }
-    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-        return WASI_ERRNO_AGAIN;
-    }
-    if errno == libc::EBADF {
-        return WASI_ERRNO_BADF;
-    }
-    if errno == libc::EBUSY {
-        return WASI_ERRNO_BUSY;
-    }
-    if errno == libc::EEXIST {
-        return WASI_ERRNO_EXIST;
-    }
-    if errno == libc::EFAULT {
-        return WASI_ERRNO_FAULT;
-    }
-    if errno == libc::EFBIG {
-        return WASI_ERRNO_FBIG;
-    }
-    if errno == libc::EINTR {
-        return WASI_ERRNO_INTR;
-    }
-    if errno == libc::EINVAL {
-        return WASI_ERRNO_INVAL;
-    }
-    if errno == libc::EIO {
-        return WASI_ERRNO_IO;
-    }
-    if errno == libc::EISDIR {
-        return WASI_ERRNO_ISDIR;
-    }
-    if errno == libc::ELOOP {
-        return WASI_ERRNO_LOOP;
-    }
-    if errno == libc::EMFILE {
-        return WASI_ERRNO_MFILE;
-    }
-    if errno == libc::ENAMETOOLONG {
-        return WASI_ERRNO_NAMETOOLONG;
-    }
-    if errno == libc::ENFILE {
-        return WASI_ERRNO_NFILE;
-    }
-    if errno == libc::ENODEV {
-        return WASI_ERRNO_NODEV;
-    }
-    if errno == libc::ENOENT {
-        return WASI_ERRNO_NOENT;
-    }
-    if errno == libc::ENOMEM {
-        return WASI_ERRNO_NOMEM;
-    }
-    if errno == libc::ENOSPC || errno == libc::EDQUOT {
-        return WASI_ERRNO_NOSPC;
-    }
-    if errno == libc::ENOSYS {
-        return WASI_ERRNO_NOSYS;
-    }
-    if errno == libc::ENOTDIR {
-        return WASI_ERRNO_NOTDIR;
-    }
-    if errno == libc::ENOTEMPTY {
-        return WASI_ERRNO_NOTEMPTY;
-    }
-    if errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP {
-        return WASI_ERRNO_NOTSUP;
-    }
-    if errno == libc::ENXIO {
-        return WASI_ERRNO_NXIO;
-    }
-    if errno == libc::EOVERFLOW {
-        return WASI_ERRNO_OVERFLOW;
-    }
-    if errno == libc::EPERM {
-        return WASI_ERRNO_PERM;
-    }
-    if errno == libc::EPIPE {
-        return WASI_ERRNO_PIPE;
-    }
-    if errno == libc::EROFS {
-        return WASI_ERRNO_ROFS;
-    }
-    if errno == libc::ESPIPE {
-        return WASI_ERRNO_SPIPE;
-    }
-    if errno == libc::ETXTBSY {
-        return WASI_ERRNO_TXTBSY;
-    }
-    if errno == libc::EXDEV {
-        return WASI_ERRNO_XDEV;
-    }
-    errno
-}
-
 fn file_trace(args: std::fmt::Arguments<'_>) {
     if std::env::var_os("WASMTIME_MARIADB_FILE_TRACE").is_some() {
         eprintln!("[wasmtime-mariadb:files] {args}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_common_file_errors_to_wasi_errno() {
-        assert_eq!(errno_for_guest(libc::EBADF), WASI_ERRNO_BADF);
-        assert_eq!(errno_for_guest(libc::EEXIST), WASI_ERRNO_EXIST);
-        assert_eq!(errno_for_guest(libc::ENOENT), WASI_ERRNO_NOENT);
-        assert_eq!(errno_for_guest(libc::ENOTDIR), WASI_ERRNO_NOTDIR);
-        assert_eq!(errno_for_guest(libc::ENOSPC), WASI_ERRNO_NOSPC);
-        assert_eq!(errno_for_guest(libc::EDQUOT), WASI_ERRNO_NOSPC);
     }
 }

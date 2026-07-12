@@ -37,6 +37,22 @@ Wasmtime 46.0.1, its component translation path explicitly rejects
 support shipped by the current WASI toolchain is stub-level support, not the
 shared-memory execution model MariaDB uses.
 
+The toolchain probe is concrete. WASI SDK 33 can produce and Wasmtime can run
+an ordinary `wasm32-wasip2` command component. Adding `-pthread` to an
+otherwise minimal program cannot link a shared-memory module because the P2
+TLS startup object was not built with the required atomics and bulk-memory
+features. Inspecting the SDK's P2 `pthread_create` object shows the
+single-threaded fallback: it immediately returns error 58 (`ENOTSUP`). It is
+not a latent implementation of MariaDB's pthread model.
+
+The component encoder has a separate hard stop. After temporary adapters
+satisfied every MariaDB-specific import, `wasm-tools component new` rejected
+the remaining `env::memory` import because a component's main core module
+cannot import memory. MariaDB's memory is specifically imported and shared so
+fresh stores can run its guest threads. Hiding that memory inside one
+component instance would prevent the host from attaching it to the fresh
+stores that the current thread ABI requires.
+
 `wasmtime-wasi-threads` does not change this result. It also creates a store
 per guest thread, requires cloneable store data, and exits the host process on
 a thread trap. It cannot clone a `WasiP1Ctx` with its descriptor table, and it
@@ -90,13 +106,18 @@ Two changes are valid independently of the migration boundary:
   uses a delimiter that matches the literal slash in `delete/update`.
 - Host `EDQUOT` now maps to the guest's `ENOSPC` error. A quota failure should
   say disk space is unavailable, not masquerade as MariaDB error 122.
+- `guest_abi.rs` owns the repeated raw-pointer copies, bounds checks, and
+  Preview 1 errno conversion used by both bridges. It removes 256 duplicate
+  runner lines (2,752 to 2,496) without touching the required cross-thread
+  descriptor ownership.
 
 ## Validation
 
 The retained bridge passed the following on this Linux x86_64 workspace:
 
 - Fresh MariaDB WASI source build after the Perl rewrite.
-- `cargo test --features dev-fixture` for runner unit coverage.
+- `cargo fmt --check`, `cargo clippy --all-targets --features dev-fixture -- -D warnings`,
+  `cargo test --features dev-fixture`, and the development fixture verification.
 - Strict durability recovery: run-directory lock, InnoDB host file lock,
   host sync calls, 12 committed rows after `SIGKILL`, and one uncommitted row
   rolled back after restart.
@@ -105,6 +126,10 @@ The retained bridge passed the following on this Linux x86_64 workspace:
   repository filesystem. The same `main.func_in` case fails under this
   workspace's quota-limited `/tmp` after its Aria temporary file reaches about
   140 MiB; it passes unchanged outside that filesystem.
+- WordPress-shaped SQL smoke: InnoDB WordPress tables and indexes, UTF-8
+  collation, a 1 MiB post body, transactions, procedures, and functions.
+- A strict 60k-query workload: four concurrent clients logged 64,012 query
+  commands and 3,004 commits in 169 seconds.
 
 ## What would make a real migration possible
 

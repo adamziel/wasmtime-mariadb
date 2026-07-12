@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
@@ -7,50 +6,19 @@ use std::os::fd::RawFd;
 
 use wasmtime::{Caller, Linker, Result};
 
-use crate::AppState;
+use crate::{
+    AppState,
+    guest_abi::{self, neg_errno},
+};
 
 const MODULE_NAME: &str = "wasmtime_mariadb_sockets";
 const GUEST_FD_BASE: i32 = 10_000;
-const MAX_IO_LEN: usize = 16 * 1024 * 1024;
 const MAX_POLL_FDS: usize = 16_384;
 const WASI_ALT_AF_INET: i32 = 1;
 const WASI_ALT_SOCK_DGRAM: i32 = 5;
 const WASI_ALT_SOCK_STREAM: i32 = 6;
 const WASI_ALT_SOCK_CLOEXEC: i32 = 0x2000;
 const WASI_ALT_SOCK_NONBLOCK: i32 = 0x4000;
-const WASI_ERRNO_ACCES: i32 = 2;
-const WASI_ERRNO_ADDRINUSE: i32 = 3;
-const WASI_ERRNO_ADDRNOTAVAIL: i32 = 4;
-const WASI_ERRNO_AFNOSUPPORT: i32 = 5;
-const WASI_ERRNO_AGAIN: i32 = 6;
-const WASI_ERRNO_ALREADY: i32 = 7;
-const WASI_ERRNO_BADF: i32 = 8;
-const WASI_ERRNO_CONNABORTED: i32 = 13;
-const WASI_ERRNO_CONNREFUSED: i32 = 14;
-const WASI_ERRNO_CONNRESET: i32 = 15;
-const WASI_ERRNO_DESTADDRREQ: i32 = 17;
-const WASI_ERRNO_FAULT: i32 = 21;
-const WASI_ERRNO_INPROGRESS: i32 = 26;
-const WASI_ERRNO_INTR: i32 = 27;
-const WASI_ERRNO_INVAL: i32 = 28;
-const WASI_ERRNO_IO: i32 = 29;
-const WASI_ERRNO_ISCONN: i32 = 30;
-const WASI_ERRNO_MSGSIZE: i32 = 35;
-const WASI_ERRNO_NETDOWN: i32 = 38;
-const WASI_ERRNO_NETRESET: i32 = 39;
-const WASI_ERRNO_NETUNREACH: i32 = 40;
-const WASI_ERRNO_NOBUFS: i32 = 42;
-const WASI_ERRNO_NOPROTOOPT: i32 = 50;
-const WASI_ERRNO_NOSYS: i32 = 52;
-const WASI_ERRNO_NOTCONN: i32 = 53;
-const WASI_ERRNO_NOTSOCK: i32 = 57;
-const WASI_ERRNO_NOTSUP: i32 = 58;
-const WASI_ERRNO_OVERFLOW: i32 = 61;
-const WASI_ERRNO_PERM: i32 = 63;
-const WASI_ERRNO_PIPE: i32 = 64;
-const WASI_ERRNO_PROTONOSUPPORT: i32 = 66;
-const WASI_ERRNO_PROTOTYPE: i32 = 67;
-const WASI_ERRNO_TIMEDOUT: i32 = 73;
 
 #[derive(Clone)]
 pub(crate) struct HostSockets {
@@ -209,7 +177,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                         return neg_errno(errno);
                     }
                 };
-                let mut addr = match read_guest(&mut caller, addr_ptr, addr_len) {
+                let mut addr = match guest_abi::read(&mut caller, addr_ptr, addr_len) {
                     Ok(addr) => addr,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -295,8 +263,8 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     )
                 };
                 if accepted < 0 {
-                    let host_errno = last_errno();
-                    let guest_errno = errno_for_guest(host_errno);
+                    let host_errno = guest_abi::last_errno();
+                    let guest_errno = guest_abi::errno_for_guest(host_errno);
                     socket_trace(format_args!(
                         "accept guest_fd={fd} raw_fd={} -> -{guest_errno} (host_errno={host_errno})",
                         socket.raw_fd
@@ -304,7 +272,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     return neg_errno(host_errno);
                 }
                 denormalize_sockaddr_for_guest(&mut addr, socket.guest_domain);
-                if let Err(errno) = write_guest(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
+                if let Err(errno) = guest_abi::write(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
                     unsafe {
                         libc::close(accepted);
                     }
@@ -344,7 +312,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let mut addr = match read_guest(&mut caller, addr_ptr, addr_len) {
+                let mut addr = match guest_abi::read(&mut caller, addr_ptr, addr_len) {
                     Ok(addr) => addr,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -397,7 +365,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let optval = match read_guest(&mut caller, optval_ptr, optlen) {
+                let optval = match guest_abi::read(&mut caller, optval_ptr, optlen) {
                     Ok(optval) => optval,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -452,7 +420,8 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                 if rc < 0 {
                     return neg_last_errno();
                 }
-                if let Err(errno) = write_guest(&mut caller, optval_ptr, &optval[..optlen as usize])
+                if let Err(errno) =
+                    guest_abi::write(&mut caller, optval_ptr, &optval[..optlen as usize])
                 {
                     return neg_errno(errno);
                 }
@@ -479,7 +448,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let buf = match read_guest(&mut caller, buf_ptr, len) {
+                let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                     Ok(buf) => buf,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -510,7 +479,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let len = match checked_len(len) {
+                let len = match guest_abi::checked_len(len) {
                     Ok(len) => len,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -527,7 +496,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     return neg_last_errno();
                 }
                 let rc = rc as usize;
-                match write_guest(&mut caller, buf_ptr, &buf[..rc]) {
+                match guest_abi::write(&mut caller, buf_ptr, &buf[..rc]) {
                     Ok(()) => rc as i32,
                     Err(errno) => neg_errno(errno),
                 }
@@ -557,11 +526,11 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let buf = match read_guest(&mut caller, buf_ptr, len) {
+                let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                     Ok(buf) => buf,
                     Err(errno) => return neg_errno(errno),
                 };
-                let mut addr = match read_guest(&mut caller, addr_ptr, addr_len) {
+                let mut addr = match guest_abi::read(&mut caller, addr_ptr, addr_len) {
                     Ok(addr) => addr,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -602,7 +571,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(socket) => socket,
                     Err(errno) => return neg_errno(errno),
                 };
-                let len = match checked_len(len) {
+                let len = match guest_abi::checked_len(len) {
                     Ok(len) => len,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -626,11 +595,13 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     return neg_last_errno();
                 }
                 let rc = rc as usize;
-                if let Err(errno) = write_guest(&mut caller, buf_ptr, &buf[..rc]) {
+                if let Err(errno) = guest_abi::write(&mut caller, buf_ptr, &buf[..rc]) {
                     return neg_errno(errno);
                 }
                 denormalize_sockaddr_for_guest(&mut addr, socket.guest_domain);
-                if let Err(errno) = write_guest(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
+                if let Err(errno) =
+                    guest_abi::write(&mut caller, addr_ptr, &addr[..addr_len as usize])
+                {
                     return neg_errno(errno);
                 }
                 match write_u32(&mut caller, addr_len_ptr, addr_len) {
@@ -722,7 +693,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     Ok(nfds) => nfds,
                     Err(errno) => return neg_errno(errno),
                 };
-                let bytes = match read_guest(&mut caller, fds_ptr, (nfds * 8) as i32) {
+                let bytes = match guest_abi::read(&mut caller, fds_ptr, (nfds * 8) as i32) {
                     Ok(bytes) => bytes,
                     Err(errno) => return neg_errno(errno),
                 };
@@ -755,8 +726,8 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                 }
                 let rc = unsafe { libc::poll(host_fds.as_mut_ptr(), host_fds.len() as _, timeout) };
                 if rc < 0 {
-                    let host_errno = last_errno();
-                    let guest_errno = errno_for_guest(host_errno);
+                    let host_errno = guest_abi::last_errno();
+                    let guest_errno = guest_abi::errno_for_guest(host_errno);
                     socket_trace(format_args!(
                         "poll nfds={nfds} timeout={timeout} -> -{guest_errno} (host_errno={host_errno})"
                     ));
@@ -774,7 +745,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     }
                     let revents = pollfd.revents.to_le_bytes();
                     if let Err(errno) =
-                        write_guest(&mut caller, fds_ptr + (index as i32 * 8) + 6, &revents)
+                        guest_abi::write(&mut caller, fds_ptr + (index as i32 * 8) + 6, &revents)
                     {
                         return neg_errno(errno);
                     }
@@ -833,7 +804,7 @@ fn sock_name(
             return neg_last_errno();
         }
         denormalize_sockaddr_for_guest(&mut addr, socket.guest_domain);
-        if let Err(errno) = write_guest(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
+        if let Err(errno) = guest_abi::write(&mut caller, addr_ptr, &addr[..addr_len as usize]) {
             return neg_errno(errno);
         }
         match write_u32(&mut caller, addr_len_ptr, addr_len) {
@@ -846,24 +817,6 @@ fn sock_name(
         let _ = (&mut caller, fd, addr_ptr, addr_len_ptr, kind);
         neg_errno(libc::ENOSYS)
     }
-}
-
-fn checked_range(ptr: i32, len: i32, memory_len: usize) -> std::result::Result<Range<usize>, i32> {
-    let ptr = usize::try_from(ptr).map_err(|_| libc::EFAULT)?;
-    let len = checked_len(len)?;
-    let end = ptr.checked_add(len).ok_or(libc::EFAULT)?;
-    if end > memory_len {
-        return Err(libc::EFAULT);
-    }
-    Ok(ptr..end)
-}
-
-fn checked_len(len: i32) -> std::result::Result<usize, i32> {
-    let len = usize::try_from(len).map_err(|_| libc::EINVAL)?;
-    if len > MAX_IO_LEN {
-        return Err(libc::EINVAL);
-    }
-    Ok(len)
 }
 
 fn checked_poll_count(nfds: i32) -> std::result::Result<usize, i32> {
@@ -901,20 +854,20 @@ fn configure_socket_type_flags(
     if socket_type.close_on_exec {
         let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
         if flags < 0 {
-            return Err(last_errno());
+            return Err(guest_abi::last_errno());
         }
         if unsafe { libc::fcntl(raw_fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-            return Err(last_errno());
+            return Err(guest_abi::last_errno());
         }
     }
 
     if socket_type.nonblocking {
         let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
         if flags < 0 {
-            return Err(last_errno());
+            return Err(guest_abi::last_errno());
         }
         if unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(last_errno());
+            return Err(guest_abi::last_errno());
         }
     }
 
@@ -982,70 +935,8 @@ fn write_sockaddr_family(addr: &mut [u8], family: i32) {
     addr[..2].copy_from_slice(&family.to_ne_bytes());
 }
 
-fn read_guest(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    len: i32,
-) -> std::result::Result<Vec<u8>, i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data(&mut *caller);
-        let range = checked_range(ptr, len, data.len())?;
-        return Ok(data[range].to_vec());
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(ptr, len, data.len())?;
-        let mut bytes = Vec::with_capacity(range.len());
-        for cell in &data[range] {
-            bytes.push(unsafe { *cell.get() });
-        }
-        return Ok(bytes);
-    }
-
-    Err(libc::EFAULT)
-}
-
-fn write_guest(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    bytes: &[u8],
-) -> std::result::Result<(), i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data_mut(&mut *caller);
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        data[range].copy_from_slice(bytes);
-        return Ok(());
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        for (cell, byte) in data[range].iter().zip(bytes) {
-            unsafe {
-                *cell.get() = *byte;
-            }
-        }
-        return Ok(());
-    }
-
-    Err(libc::EFAULT)
-}
-
 fn read_u32(caller: &mut Caller<'_, AppState>, ptr: i32) -> std::result::Result<u32, i32> {
-    let bytes = read_guest(caller, ptr, 4)?;
+    let bytes = guest_abi::read(caller, ptr, 4)?;
     Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
 }
 
@@ -1054,8 +945,7 @@ fn write_u32(
     ptr: i32,
     value: libc::socklen_t,
 ) -> std::result::Result<(), i32> {
-    let value = u32::try_from(value).map_err(|_| libc::EINVAL)?;
-    write_guest(caller, ptr, &value.to_le_bytes())
+    guest_abi::write(caller, ptr, &value.to_le_bytes())
 }
 
 #[cfg(unix)]
@@ -1073,144 +963,11 @@ fn cvt_ssize(rc: libc::ssize_t) -> i32 {
 
 #[cfg(unix)]
 fn neg_last_errno() -> i32 {
-    neg_errno(last_errno())
-}
-
-#[cfg(unix)]
-fn last_errno() -> i32 {
-    std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or(libc::EIO)
-}
-
-fn neg_errno(errno: i32) -> i32 {
-    -errno_for_guest(errno)
-}
-
-fn errno_for_guest(errno: i32) -> i32 {
-    if errno == libc::EACCES {
-        return WASI_ERRNO_ACCES;
-    }
-    if errno == libc::EADDRINUSE {
-        return WASI_ERRNO_ADDRINUSE;
-    }
-    if errno == libc::EADDRNOTAVAIL {
-        return WASI_ERRNO_ADDRNOTAVAIL;
-    }
-    if errno == libc::EAFNOSUPPORT {
-        return WASI_ERRNO_AFNOSUPPORT;
-    }
-    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-        return WASI_ERRNO_AGAIN;
-    }
-    if errno == libc::EALREADY {
-        return WASI_ERRNO_ALREADY;
-    }
-    if errno == libc::EBADF {
-        return WASI_ERRNO_BADF;
-    }
-    if errno == libc::ECONNABORTED {
-        return WASI_ERRNO_CONNABORTED;
-    }
-    if errno == libc::ECONNREFUSED {
-        return WASI_ERRNO_CONNREFUSED;
-    }
-    if errno == libc::ECONNRESET {
-        return WASI_ERRNO_CONNRESET;
-    }
-    if errno == libc::EDESTADDRREQ {
-        return WASI_ERRNO_DESTADDRREQ;
-    }
-    if errno == libc::EFAULT {
-        return WASI_ERRNO_FAULT;
-    }
-    if errno == libc::EINPROGRESS {
-        return WASI_ERRNO_INPROGRESS;
-    }
-    if errno == libc::EINTR {
-        return WASI_ERRNO_INTR;
-    }
-    if errno == libc::EINVAL {
-        return WASI_ERRNO_INVAL;
-    }
-    if errno == libc::EIO {
-        return WASI_ERRNO_IO;
-    }
-    if errno == libc::EISCONN {
-        return WASI_ERRNO_ISCONN;
-    }
-    if errno == libc::EMSGSIZE {
-        return WASI_ERRNO_MSGSIZE;
-    }
-    if errno == libc::ENETDOWN {
-        return WASI_ERRNO_NETDOWN;
-    }
-    if errno == libc::ENETRESET {
-        return WASI_ERRNO_NETRESET;
-    }
-    if errno == libc::ENETUNREACH {
-        return WASI_ERRNO_NETUNREACH;
-    }
-    if errno == libc::ENOBUFS {
-        return WASI_ERRNO_NOBUFS;
-    }
-    if errno == libc::ENOPROTOOPT {
-        return WASI_ERRNO_NOPROTOOPT;
-    }
-    if errno == libc::ENOSYS {
-        return WASI_ERRNO_NOSYS;
-    }
-    if errno == libc::ENOTCONN {
-        return WASI_ERRNO_NOTCONN;
-    }
-    if errno == libc::ENOTSOCK {
-        return WASI_ERRNO_NOTSOCK;
-    }
-    if errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP {
-        return WASI_ERRNO_NOTSUP;
-    }
-    if errno == libc::EOVERFLOW {
-        return WASI_ERRNO_OVERFLOW;
-    }
-    if errno == libc::EPERM {
-        return WASI_ERRNO_PERM;
-    }
-    if errno == libc::EPIPE {
-        return WASI_ERRNO_PIPE;
-    }
-    if errno == libc::EPROTONOSUPPORT {
-        return WASI_ERRNO_PROTONOSUPPORT;
-    }
-    if errno == libc::EPROTOTYPE {
-        return WASI_ERRNO_PROTOTYPE;
-    }
-    if errno == libc::ETIMEDOUT {
-        return WASI_ERRNO_TIMEDOUT;
-    }
-    errno
+    neg_errno(guest_abi::last_errno())
 }
 
 fn socket_trace(args: std::fmt::Arguments<'_>) {
     if std::env::var_os("WASMTIME_MARIADB_SOCKET_TRACE").is_some() {
         eprintln!("[wasmtime-mariadb:sockets] {args}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_nonblocking_socket_errors_to_wasi_errno() {
-        assert_eq!(errno_for_guest(libc::EAGAIN), WASI_ERRNO_AGAIN);
-        assert_eq!(errno_for_guest(libc::EWOULDBLOCK), WASI_ERRNO_AGAIN);
-    }
-
-    #[test]
-    fn maps_common_socket_errors_to_wasi_errno() {
-        assert_eq!(errno_for_guest(libc::EBADF), WASI_ERRNO_BADF);
-        assert_eq!(errno_for_guest(libc::ECONNRESET), WASI_ERRNO_CONNRESET);
-        assert_eq!(errno_for_guest(libc::ENOTCONN), WASI_ERRNO_NOTCONN);
-        assert_eq!(errno_for_guest(libc::EOPNOTSUPP), WASI_ERRNO_NOTSUP);
     }
 }

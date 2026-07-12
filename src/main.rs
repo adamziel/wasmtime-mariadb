@@ -18,6 +18,7 @@ use wasmtime::{
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtxBuilder};
 
+mod guest_abi;
 mod host_files;
 mod host_sockets;
 
@@ -236,6 +237,7 @@ fn acquire_data_dir_lock(path: Option<&Path>) -> Result<Option<DataDirLock>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .with_context(|| {
             format!(
@@ -263,7 +265,7 @@ fn acquire_data_dir_lock(path: Option<&Path>) -> Result<Option<DataDirLock>> {
                 )
             });
         }
-        return Ok(Some(DataDirLock { _file: file }));
+        Ok(Some(DataDirLock { _file: file }))
     }
 
     #[cfg(not(unix))]
