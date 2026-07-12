@@ -6,9 +6,17 @@ build = "build.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 libc = "0.2"
+rustix = { version = "1.1.4", features = ["fs"] }
 wasmtime = "46.0.1"
 wasmtime-wasi = { version = "46.0.1", default-features = false, features = ["p1"] }
+
+[target.'cfg(windows)'.dependencies]
+fs4 = "1.1.0"
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 wat = "1.0"

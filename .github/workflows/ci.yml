@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  platform-acceptance:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-24.04
+          - name: macOS Apple Silicon
+            os: macos-15
+          - name: Windows x86_64
+            os: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Check development fixture
+        shell: bash
+        run: |
+          cargo check --features dev-fixture
+          cargo test --features dev-fixture
+          cargo run --bin wasmtime-mariadb --features dev-fixture -- --show-embedded-source
+
+      - name: Check formatting and lints
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --features dev-fixture -- -D warnings
+          bash -n scripts/*.sh
+
+      - name: Check PowerShell entry points
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw 'scripts/run-server.ps1'))
+          [void][scriptblock]::Create((Get-Content -Raw 'scripts/stop-server.ps1'))
+          [void][scriptblock]::Create((Get-Content -Raw 'scripts/package-release.ps1'))
+          [void][scriptblock]::Create((Get-Content -Raw 'scripts/install-release.ps1'))
+
+      - name: Download MariaDB WebAssembly payload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-input
+          gh release download v0.1.11 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern mariadbd-wasm.tar.gz \
+            --dir release-input
+          tar -xzf release-input/mariadbd-wasm.tar.gz -C release-input
+          test -f release-input/mariadbd
+
+      - name: Build release runner and supervisor
+        shell: bash
+        run: |
+          MARIADBD_WASM="$PWD/release-input/mariadbd" \
+            cargo build --release --bin wasmtime-mariadb --bin wasmtime-mariadb-supervisor
+
+      - name: Exercise lifecycle and recovery
+        shell: bash
+        run: |
+          python scripts/test-supervisor-lifecycle.py \
+            --run-dir "$PWD/build/ci-supervisor-lifecycle" \
+            --supervisor "$PWD/target/release/wasmtime-mariadb-supervisor${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            --runner "$PWD/target/release/wasmtime-mariadb${{ runner.os == 'Windows' && '.exe' || '' }}"
+
+      - name: Exercise release entry points
+        shell: bash
+        run: |
+          python scripts/test-supervisor-lifecycle.py \
+            --entrypoint \
+            --run-dir "$PWD/build/ci-entrypoint-lifecycle" \
+            --supervisor "$PWD/target/release/wasmtime-mariadb-supervisor${{ runner.os == 'Windows' && '.exe' || '' }}" \
+            --runner "$PWD/target/release/wasmtime-mariadb${{ runner.os == 'Windows' && '.exe' || '' }}"
+
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ./scripts/package-release.sh \
+            v0.0.0-ci \
+            ci \
+            target/release/wasmtime-mariadb \
+            build/ci-dist
+          tar -tzf build/ci-dist/wasmtime-mariadb-ci.tar.gz | \
+            grep -q '/wasmtime-mariadb-supervisor$'
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/package-release.ps1 v0.0.0-ci ci target/release/wasmtime-mariadb.exe build/ci-dist
+          if (-not (Test-Path 'build/ci-dist/wasmtime-mariadb-ci.zip')) {
+            throw 'Windows release archive was not created.'
+          }
+
+      - name: Upload runtime logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}-runtime-logs
+          path: build/ci-supervisor-lifecycle
+          if-no-files-found: ignore

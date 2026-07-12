@@ -1,23 +1,33 @@
 use std::collections::HashMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
 use std::os::unix::fs::{FileExt, MetadataExt};
+
+#[cfg(windows)]
+use std::os::windows::fs::{FileExt as WindowsFileExt, OpenOptionsExt};
+
+#[cfg(unix)]
+use rustix::fs::{FlockOperation, fcntl_lock};
+
+#[cfg(windows)]
+use fs4::{FileExt as Fs4FileExt, TryLockError};
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
 
 use wasmtime::{Caller, Linker, Result};
 
-use crate::{AppState, Cli, Preopen};
+use crate::{
+    AppState, Cli, Preopen,
+    guest_abi::{self, neg_errno},
+};
 
 const MODULE_NAME: &str = "wasmtime_mariadb_files";
 const GUEST_FD_BASE: i32 = 20_000;
-const MAX_IO_LEN: usize = 16 * 1024 * 1024;
-const MAX_PATH_LEN: usize = 16 * 1024;
 
 const POSIX_O_ACCMODE: i32 = 0o3;
 const POSIX_O_WRONLY: i32 = 0o1;
@@ -34,38 +44,6 @@ const WASI_O_EXCL: i32 = 0x0004 << 12;
 const WASI_O_TRUNC: i32 = 0x0008 << 12;
 const WASI_O_RDONLY: i32 = 0x0400_0000;
 const WASI_O_WRONLY: i32 = 0x1000_0000;
-const WASI_ERRNO_ACCES: i32 = 2;
-const WASI_ERRNO_AGAIN: i32 = 6;
-const WASI_ERRNO_BADF: i32 = 8;
-const WASI_ERRNO_BUSY: i32 = 10;
-const WASI_ERRNO_EXIST: i32 = 20;
-const WASI_ERRNO_FAULT: i32 = 21;
-const WASI_ERRNO_FBIG: i32 = 22;
-const WASI_ERRNO_INTR: i32 = 27;
-const WASI_ERRNO_INVAL: i32 = 28;
-const WASI_ERRNO_IO: i32 = 29;
-const WASI_ERRNO_ISDIR: i32 = 31;
-const WASI_ERRNO_LOOP: i32 = 32;
-const WASI_ERRNO_MFILE: i32 = 33;
-const WASI_ERRNO_NAMETOOLONG: i32 = 37;
-const WASI_ERRNO_NFILE: i32 = 41;
-const WASI_ERRNO_NODEV: i32 = 43;
-const WASI_ERRNO_NOENT: i32 = 44;
-const WASI_ERRNO_NOMEM: i32 = 48;
-const WASI_ERRNO_NOSPC: i32 = 51;
-const WASI_ERRNO_NOSYS: i32 = 52;
-const WASI_ERRNO_NOTDIR: i32 = 54;
-const WASI_ERRNO_NOTEMPTY: i32 = 55;
-const WASI_ERRNO_NOTSUP: i32 = 58;
-const WASI_ERRNO_NXIO: i32 = 60;
-const WASI_ERRNO_OVERFLOW: i32 = 61;
-const WASI_ERRNO_PERM: i32 = 63;
-const WASI_ERRNO_PIPE: i32 = 64;
-const WASI_ERRNO_ROFS: i32 = 69;
-const WASI_ERRNO_SPIPE: i32 = 70;
-const WASI_ERRNO_TXTBSY: i32 = 74;
-const WASI_ERRNO_XDEV: i32 = 75;
-const WASI_ENOTCAPABLE: i32 = 76;
 
 #[derive(Clone)]
 pub(crate) struct HostFiles {
@@ -117,7 +95,7 @@ impl HostFiles {
             });
         }
 
-        preopens.sort_by(|left, right| right.guest.len().cmp(&left.guest.len()));
+        preopens.sort_by_key(|preopen| std::cmp::Reverse(preopen.guest.len()));
 
         Ok(Self {
             inner: Arc::new(Mutex::new(HostFilesInner {
@@ -168,6 +146,12 @@ impl HostFiles {
             options.truncate(true);
         }
 
+        #[cfg(windows)]
+        if host_path.is_dir() {
+            // Windows rejects directory handles unless CreateFile gets this flag.
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        }
+
         let file = match options.open(&host_path) {
             Ok(file) => file,
             Err(err) => {
@@ -206,37 +190,30 @@ impl HostFiles {
         }
     }
 
+    #[cfg(any(unix, windows))]
     fn pread(&self, fd: i32, buf: &mut [u8], offset: u64) -> i32 {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
-            match host_file.file.read_at(buf, offset) {
-                Ok(n) => {
-                    file_trace(format_args!(
-                        "pread fd={fd} path={} len={} offset={offset} rc={n}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
-                }
-                Err(err) => {
-                    let errno = io_errno(err);
-                    file_trace(format_args!(
-                        "pread fd={fd} path={} len={} offset={offset} errno={errno}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    neg_errno(errno)
-                }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
+        match positioned_read(&host_file.file, buf, offset) {
+            Ok(n) => {
+                file_trace(format_args!(
+                    "pread fd={fd} path={} len={} offset={offset} rc={n}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
             }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (fd, buf, offset);
-            neg_errno(libc::ENOSYS)
+            Err(err) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "pread fd={fd} path={} len={} offset={offset} errno={errno}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                neg_errno(errno)
+            }
         }
     }
 
@@ -266,37 +243,30 @@ impl HostFiles {
         }
     }
 
+    #[cfg(any(unix, windows))]
     fn pwrite(&self, fd: i32, buf: &[u8], offset: u64) -> i32 {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
-            match host_file.file.write_at(buf, offset) {
-                Ok(n) => {
-                    file_trace(format_args!(
-                        "pwrite fd={fd} path={} len={} offset={offset} rc={n}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
-                }
-                Err(err) => {
-                    let errno = io_errno(err);
-                    file_trace(format_args!(
-                        "pwrite fd={fd} path={} len={} offset={offset} errno={errno}",
-                        host_file.path.display(),
-                        buf.len()
-                    ));
-                    neg_errno(errno)
-                }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
+        match positioned_write(&host_file.file, buf, offset) {
+            Ok(n) => {
+                file_trace(format_args!(
+                    "pwrite fd={fd} path={} len={} offset={offset} rc={n}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                i32::try_from(n).unwrap_or_else(|_| neg_errno(libc::EOVERFLOW))
             }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (fd, buf, offset);
-            neg_errno(libc::ENOSYS)
+            Err(err) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "pwrite fd={fd} path={} len={} offset={offset} errno={errno}",
+                    host_file.path.display(),
+                    buf.len()
+                ));
+                neg_errno(errno)
+            }
         }
     }
 
@@ -375,6 +345,21 @@ impl HostFiles {
         let Some(host_file) = inner.files.get(&fd) else {
             return neg_errno(libc::EBADF);
         };
+
+        #[cfg(windows)]
+        if host_file
+            .file
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            // FlushFileBuffers does not support directory handles on Windows.
+            file_trace(format_args!(
+                "sync fd={fd} path={} data_only={data_only} skipped=directory",
+                host_file.path.display()
+            ));
+            return 0;
+        }
+
         let result = if data_only {
             host_file.file.sync_data()
         } else {
@@ -399,29 +384,24 @@ impl HostFiles {
         }
     }
 
+    #[cfg(any(unix, windows))]
     fn lock_exclusive(&self, fd: i32) -> i32 {
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return neg_errno(libc::EBADF);
+        };
+
         #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return neg_errno(libc::EBADF);
-            };
-
-            let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-            lock.l_type = libc::F_WRLCK as _;
-            lock.l_whence = libc::SEEK_SET as _;
-            lock.l_start = 0;
-            lock.l_len = 0;
-
-            let result = unsafe { libc::fcntl(host_file.file.as_raw_fd(), libc::F_SETLK, &lock) };
-            if result == 0 {
+        match fcntl_lock(&host_file.file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {
                 file_trace(format_args!(
                     "lock_exclusive fd={fd} path={} rc=0",
                     host_file.path.display()
                 ));
                 0
-            } else {
-                let errno = io_errno(std::io::Error::last_os_error());
+            }
+            Err(err) => {
+                let errno = err.raw_os_error();
                 file_trace(format_args!(
                     "lock_exclusive fd={fd} path={} errno={errno}",
                     host_file.path.display()
@@ -429,40 +409,48 @@ impl HostFiles {
                 neg_errno(errno)
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = fd;
-            neg_errno(libc::ENOTSUP)
+
+        #[cfg(windows)]
+        match Fs4FileExt::try_lock(&host_file.file) {
+            Ok(()) => {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} rc=0",
+                    host_file.path.display()
+                ));
+                0
+            }
+            Err(TryLockError::WouldBlock) => {
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={}",
+                    host_file.path.display(),
+                    libc::EAGAIN
+                ));
+                neg_errno(libc::EAGAIN)
+            }
+            Err(TryLockError::Error(err)) => {
+                let errno = io_errno(err);
+                file_trace(format_args!(
+                    "lock_exclusive fd={fd} path={} errno={errno}",
+                    host_file.path.display()
+                ));
+                neg_errno(errno)
+            }
         }
     }
 
+    #[cfg(any(unix, windows))]
     fn fstat(&self, fd: i32) -> std::result::Result<HostFileStat, i32> {
-        #[cfg(unix)]
-        {
-            let inner = self.inner.lock().unwrap();
-            let Some(host_file) = inner.files.get(&fd) else {
-                return Err(libc::EBADF);
-            };
-            stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = fd;
-            Err(libc::ENOSYS)
-        }
+        let inner = self.inner.lock().unwrap();
+        let Some(host_file) = inner.files.get(&fd) else {
+            return Err(libc::EBADF);
+        };
+        stat_from_metadata(host_file.file.metadata().map_err(io_errno)?)
     }
 
+    #[cfg(any(unix, windows))]
     fn stat(&self, guest_path: &str) -> std::result::Result<HostFileStat, i32> {
-        #[cfg(unix)]
-        {
-            let host_path = self.resolve(guest_path)?;
-            stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = guest_path;
-            Err(libc::ENOSYS)
-        }
+        let host_path = self.resolve(guest_path)?;
+        stat_from_metadata(std::fs::metadata(&host_path).map_err(io_errno)?)
     }
 
     fn resolve(&self, guest_path: &str) -> std::result::Result<PathBuf, i32> {
@@ -488,16 +476,17 @@ impl HostFiles {
             return Ok(join_suffix(&preopen.host, suffix));
         }
 
-        Err(WASI_ENOTCAPABLE)
+        Err(guest_abi::ERRNO_NOTCAPABLE)
     }
 }
 
+#[cfg(any(unix, windows))]
 pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
     linker.func_wrap(
         MODULE_NAME,
         "open",
         |mut caller: Caller<'_, AppState>, path_ptr: i32, flags: i32, mode: i32| -> i32 {
-            let path = match read_cstr(&mut caller, path_ptr) {
+            let path = match guest_abi::read_cstr(&mut caller, path_ptr) {
                 Ok(path) => path,
                 Err(errno) => return neg_errno(errno),
             };
@@ -515,7 +504,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "pread",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32, offset: i64| -> i32 {
-            let len = match checked_len(len) {
+            let len = match guest_abi::checked_len(len) {
                 Ok(len) => len,
                 Err(errno) => return neg_errno(errno),
             };
@@ -524,7 +513,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
             if rc <= 0 {
                 return rc;
             }
-            match write_guest(&mut caller, buf_ptr, &buf[..rc as usize]) {
+            match guest_abi::write(&mut caller, buf_ptr, &buf[..rc as usize]) {
                 Ok(()) => rc,
                 Err(errno) => neg_errno(errno),
             }
@@ -535,7 +524,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "read",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32| -> i32 {
-            let len = match checked_len(len) {
+            let len = match guest_abi::checked_len(len) {
                 Ok(len) => len,
                 Err(errno) => return neg_errno(errno),
             };
@@ -544,7 +533,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
             if rc <= 0 {
                 return rc;
             }
-            match write_guest(&mut caller, buf_ptr, &buf[..rc as usize]) {
+            match guest_abi::write(&mut caller, buf_ptr, &buf[..rc as usize]) {
                 Ok(()) => rc,
                 Err(errno) => neg_errno(errno),
             }
@@ -555,7 +544,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "pwrite",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32, offset: i64| -> i32 {
-            let buf = match read_guest(&mut caller, buf_ptr, len) {
+            let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                 Ok(buf) => buf,
                 Err(errno) => return neg_errno(errno),
             };
@@ -567,7 +556,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
         MODULE_NAME,
         "write",
         |mut caller: Caller<'_, AppState>, fd: i32, buf_ptr: i32, len: i32| -> i32 {
-            let buf = match read_guest(&mut caller, buf_ptr, len) {
+            let buf = match guest_abi::read(&mut caller, buf_ptr, len) {
                 Ok(buf) => buf,
                 Err(errno) => return neg_errno(errno),
             };
@@ -627,31 +616,21 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                 Ok(stat) => stat,
                 Err(errno) => return neg_errno(errno),
             };
-            if let Err(errno) = write_i64(&mut caller, size_ptr, stat.size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, blocks_ptr, stat.blocks) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, block_size_ptr, stat.block_size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, dev_ptr, stat.dev) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i32(&mut caller, mode_ptr, stat.mode) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, atime_ptr, stat.atime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, mtime_ptr, stat.mtime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, ctime_ptr, stat.ctime) {
-                return neg_errno(errno);
-            }
-            0
+            write_file_stat(
+                &mut caller,
+                stat,
+                [
+                    size_ptr,
+                    blocks_ptr,
+                    block_size_ptr,
+                    dev_ptr,
+                    mode_ptr,
+                    atime_ptr,
+                    mtime_ptr,
+                    ctime_ptr,
+                ],
+            )
+            .map_or_else(neg_errno, |_| 0)
         },
     )?;
 
@@ -669,7 +648,7 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
          mtime_ptr: i32,
          ctime_ptr: i32|
          -> i32 {
-            let path = match read_cstr(&mut caller, path_ptr) {
+            let path = match guest_abi::read_cstr(&mut caller, path_ptr) {
                 Ok(path) => path,
                 Err(errno) => return neg_errno(errno),
             };
@@ -680,34 +659,30 @@ pub(crate) fn add_to_linker(linker: &mut Linker<AppState>) -> Result<()> {
                     return neg_errno(errno);
                 }
             };
-            if let Err(errno) = write_i64(&mut caller, size_ptr, stat.size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, blocks_ptr, stat.blocks) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, block_size_ptr, stat.block_size) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, dev_ptr, stat.dev) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i32(&mut caller, mode_ptr, stat.mode) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, atime_ptr, stat.atime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, mtime_ptr, stat.mtime) {
-                return neg_errno(errno);
-            }
-            if let Err(errno) = write_i64(&mut caller, ctime_ptr, stat.ctime) {
-                return neg_errno(errno);
-            }
-            0
+            write_file_stat(
+                &mut caller,
+                stat,
+                [
+                    size_ptr,
+                    blocks_ptr,
+                    block_size_ptr,
+                    dev_ptr,
+                    mode_ptr,
+                    atime_ptr,
+                    mtime_ptr,
+                    ctime_ptr,
+                ],
+            )
+            .map_or_else(neg_errno, |_| 0)
         },
     )?;
 
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn add_to_linker(_linker: &mut Linker<AppState>) -> Result<()> {
+    // The fixture can still instantiate on unsupported hosts.
     Ok(())
 }
 
@@ -725,6 +700,27 @@ fn stat_from_metadata(metadata: Metadata) -> std::result::Result<HostFileStat, i
     })
 }
 
+#[cfg(windows)]
+fn stat_from_metadata(metadata: Metadata) -> std::result::Result<HostFileStat, i32> {
+    let size = i64::try_from(metadata.len()).map_err(|_| libc::EOVERFLOW)?;
+    let blocks = size.saturating_add(4095) / 4096;
+    let mode = if metadata.is_dir() {
+        libc::S_IFDIR | libc::S_IREAD | libc::S_IWRITE
+    } else {
+        libc::S_IFREG | libc::S_IREAD | libc::S_IWRITE
+    };
+    Ok(HostFileStat {
+        size,
+        blocks,
+        block_size: 4096,
+        dev: 0,
+        mode,
+        atime: system_time_seconds(metadata.accessed()),
+        mtime: system_time_seconds(metadata.modified()),
+        ctime: system_time_seconds(metadata.created()),
+    })
+}
+
 fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {
     if path.is_empty() {
         return Err(libc::ENOENT);
@@ -737,7 +733,7 @@ fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {
             "" | "." => {}
             ".." => {
                 if parts.pop().is_none() {
-                    return Err(WASI_ENOTCAPABLE);
+                    return Err(guest_abi::ERRNO_NOTCAPABLE);
                 }
             }
             part => parts.push(part),
@@ -758,8 +754,8 @@ fn normalize_guest_path(path: &str) -> std::result::Result<String, i32> {
     }
 }
 
-fn join_suffix(root: &PathBuf, suffix: &str) -> PathBuf {
-    let mut path = root.clone();
+fn join_suffix(root: &Path, suffix: &str) -> PathBuf {
+    let mut path = root.to_path_buf();
     for component in suffix.split('/') {
         if !component.is_empty() && component != "." {
             path.push(component);
@@ -768,247 +764,118 @@ fn join_suffix(root: &PathBuf, suffix: &str) -> PathBuf {
     path
 }
 
-fn read_cstr(caller: &mut Caller<'_, AppState>, ptr: i32) -> std::result::Result<String, i32> {
-    let start = usize::try_from(ptr).map_err(|_| libc::EFAULT)?;
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data(&mut *caller);
-        if start >= data.len() {
-            return Err(libc::EFAULT);
-        }
-        let max_end = start.saturating_add(MAX_PATH_LEN).min(data.len());
-        let Some(end) = data[start..max_end].iter().position(|byte| *byte == 0) else {
-            return Err(libc::ENAMETOOLONG);
-        };
-        return std::str::from_utf8(&data[start..start + end])
-            .map(str::to_owned)
-            .map_err(|_| libc::EINVAL);
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        if start >= data.len() {
-            return Err(libc::EFAULT);
-        }
-        let max_end = start.saturating_add(MAX_PATH_LEN).min(data.len());
-        let mut bytes = Vec::new();
-        for cell in &data[start..max_end] {
-            let byte = unsafe { *cell.get() };
-            if byte == 0 {
-                return String::from_utf8(bytes).map_err(|_| libc::EINVAL);
-            }
-            bytes.push(byte);
-        }
-        return Err(libc::ENAMETOOLONG);
-    }
-
-    Err(libc::EFAULT)
-}
-
-fn checked_range(ptr: i32, len: i32, memory_len: usize) -> std::result::Result<Range<usize>, i32> {
-    let ptr = usize::try_from(ptr).map_err(|_| libc::EFAULT)?;
-    let len = checked_len(len)?;
-    let end = ptr.checked_add(len).ok_or(libc::EFAULT)?;
-    if end > memory_len {
-        return Err(libc::EFAULT);
-    }
-    Ok(ptr..end)
-}
-
-fn checked_len(len: i32) -> std::result::Result<usize, i32> {
-    let len = usize::try_from(len).map_err(|_| libc::EINVAL)?;
-    if len > MAX_IO_LEN {
-        return Err(libc::EINVAL);
-    }
-    Ok(len)
-}
-
-fn read_guest(
+#[cfg(any(unix, windows))]
+fn write_file_stat(
     caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    len: i32,
-) -> std::result::Result<Vec<u8>, i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data(&mut *caller);
-        let range = checked_range(ptr, len, data.len())?;
-        return Ok(data[range].to_vec());
-    }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(ptr, len, data.len())?;
-        let mut bytes = Vec::with_capacity(range.len());
-        for cell in &data[range] {
-            bytes.push(unsafe { *cell.get() });
-        }
-        return Ok(bytes);
-    }
-
-    Err(libc::EFAULT)
-}
-
-fn write_guest(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    bytes: &[u8],
+    stat: HostFileStat,
+    [size, blocks, block_size, dev, mode, atime, mtime, ctime]: [i32; 8],
 ) -> std::result::Result<(), i32> {
-    let export = caller.get_export("memory").ok_or(libc::EFAULT)?;
-
-    if let Some(mem) = export.clone().into_memory() {
-        let data = mem.data_mut(&mut *caller);
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        data[range].copy_from_slice(bytes);
-        return Ok(());
+    for (ptr, value) in [
+        (size, stat.size),
+        (blocks, stat.blocks),
+        (block_size, stat.block_size),
+        (dev, stat.dev),
+    ] {
+        guest_abi::write(caller, ptr, &value.to_le_bytes())?;
     }
-
-    if let Some(mem) = export.into_shared_memory() {
-        let data = mem.data();
-        let range = checked_range(
-            ptr,
-            i32::try_from(bytes.len()).map_err(|_| libc::EINVAL)?,
-            data.len(),
-        )?;
-        for (cell, byte) in data[range].iter().zip(bytes) {
-            unsafe {
-                *cell.get() = *byte;
-            }
-        }
-        return Ok(());
+    guest_abi::write(caller, mode, &stat.mode.to_le_bytes())?;
+    for (ptr, value) in [
+        (atime, stat.atime),
+        (mtime, stat.mtime),
+        (ctime, stat.ctime),
+    ] {
+        guest_abi::write(caller, ptr, &value.to_le_bytes())?;
     }
-
-    Err(libc::EFAULT)
+    Ok(())
 }
 
-fn write_i32(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    value: i32,
-) -> std::result::Result<(), i32> {
-    write_guest(caller, ptr, &value.to_le_bytes())
+/// Reads at an explicit offset without changing MariaDB's shared file cursor.
+#[cfg(unix)]
+fn positioned_read(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.read_at(buf, offset)
 }
 
-fn write_i64(
-    caller: &mut Caller<'_, AppState>,
-    ptr: i32,
-    value: i64,
-) -> std::result::Result<(), i32> {
-    write_guest(caller, ptr, &value.to_le_bytes())
+/// Uses Windows' positional read operation for the same guest ABI contract.
+#[cfg(windows)]
+fn positioned_read(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_read(buf, offset)
+}
+
+/// Writes at an explicit offset without changing MariaDB's shared file cursor.
+#[cfg(unix)]
+fn positioned_write(file: &File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
+    file.write_at(buf, offset)
+}
+
+/// Uses Windows' positional write operation for the same guest ABI contract.
+#[cfg(windows)]
+fn positioned_write(file: &File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
+    file.seek_write(buf, offset)
+}
+
+/// Converts optional Windows metadata timestamps into the guest's Unix seconds.
+#[cfg(windows)]
+fn system_time_seconds(value: std::io::Result<std::time::SystemTime>) -> i64 {
+    value
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or(0)
 }
 
 fn io_error_from_errno(errno: i32) -> std::io::Error {
+    #[cfg(unix)]
+    {
+        return std::io::Error::from_raw_os_error(errno);
+    }
+
+    #[cfg(windows)]
+    {
+        let kind = match errno {
+            libc::EACCES | libc::EPERM => std::io::ErrorKind::PermissionDenied,
+            libc::EAGAIN | libc::EWOULDBLOCK => std::io::ErrorKind::WouldBlock,
+            libc::EEXIST => std::io::ErrorKind::AlreadyExists,
+            libc::EINVAL => std::io::ErrorKind::InvalidInput,
+            libc::ENOENT => std::io::ErrorKind::NotFound,
+            libc::ENOSPC => std::io::ErrorKind::StorageFull,
+            _ => std::io::ErrorKind::Other,
+        };
+        return std::io::Error::from(kind);
+    }
+
+    #[allow(unreachable_code)]
     std::io::Error::from_raw_os_error(errno)
 }
 
 fn io_errno(err: std::io::Error) -> i32 {
+    #[cfg(unix)]
+    {
+        return err.raw_os_error().unwrap_or(libc::EIO);
+    }
+
+    #[cfg(windows)]
+    {
+        return match err.kind() {
+            std::io::ErrorKind::NotFound => libc::ENOENT,
+            std::io::ErrorKind::PermissionDenied => libc::EACCES,
+            std::io::ErrorKind::ConnectionRefused => libc::ECONNREFUSED,
+            std::io::ErrorKind::ConnectionReset => libc::ECONNRESET,
+            std::io::ErrorKind::ConnectionAborted => libc::ECONNABORTED,
+            std::io::ErrorKind::NotConnected => libc::ENOTCONN,
+            std::io::ErrorKind::AddrInUse => libc::EADDRINUSE,
+            std::io::ErrorKind::AddrNotAvailable => libc::EADDRNOTAVAIL,
+            std::io::ErrorKind::BrokenPipe => libc::EPIPE,
+            std::io::ErrorKind::AlreadyExists => libc::EEXIST,
+            std::io::ErrorKind::WouldBlock => libc::EAGAIN,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => libc::EINVAL,
+            std::io::ErrorKind::TimedOut => libc::ETIMEDOUT,
+            std::io::ErrorKind::WriteZero | std::io::ErrorKind::StorageFull => libc::ENOSPC,
+            _ => libc::EIO,
+        };
+    }
+
+    #[allow(unreachable_code)]
     err.raw_os_error().unwrap_or(libc::EIO)
-}
-
-fn neg_errno(errno: i32) -> i32 {
-    -errno_for_guest(errno)
-}
-
-fn errno_for_guest(errno: i32) -> i32 {
-    if errno == libc::EACCES {
-        return WASI_ERRNO_ACCES;
-    }
-    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-        return WASI_ERRNO_AGAIN;
-    }
-    if errno == libc::EBADF {
-        return WASI_ERRNO_BADF;
-    }
-    if errno == libc::EBUSY {
-        return WASI_ERRNO_BUSY;
-    }
-    if errno == libc::EEXIST {
-        return WASI_ERRNO_EXIST;
-    }
-    if errno == libc::EFAULT {
-        return WASI_ERRNO_FAULT;
-    }
-    if errno == libc::EFBIG {
-        return WASI_ERRNO_FBIG;
-    }
-    if errno == libc::EINTR {
-        return WASI_ERRNO_INTR;
-    }
-    if errno == libc::EINVAL {
-        return WASI_ERRNO_INVAL;
-    }
-    if errno == libc::EIO {
-        return WASI_ERRNO_IO;
-    }
-    if errno == libc::EISDIR {
-        return WASI_ERRNO_ISDIR;
-    }
-    if errno == libc::ELOOP {
-        return WASI_ERRNO_LOOP;
-    }
-    if errno == libc::EMFILE {
-        return WASI_ERRNO_MFILE;
-    }
-    if errno == libc::ENAMETOOLONG {
-        return WASI_ERRNO_NAMETOOLONG;
-    }
-    if errno == libc::ENFILE {
-        return WASI_ERRNO_NFILE;
-    }
-    if errno == libc::ENODEV {
-        return WASI_ERRNO_NODEV;
-    }
-    if errno == libc::ENOENT {
-        return WASI_ERRNO_NOENT;
-    }
-    if errno == libc::ENOMEM {
-        return WASI_ERRNO_NOMEM;
-    }
-    if errno == libc::ENOSPC {
-        return WASI_ERRNO_NOSPC;
-    }
-    if errno == libc::ENOSYS {
-        return WASI_ERRNO_NOSYS;
-    }
-    if errno == libc::ENOTDIR {
-        return WASI_ERRNO_NOTDIR;
-    }
-    if errno == libc::ENOTEMPTY {
-        return WASI_ERRNO_NOTEMPTY;
-    }
-    if errno == libc::ENOTSUP || errno == libc::EOPNOTSUPP {
-        return WASI_ERRNO_NOTSUP;
-    }
-    if errno == libc::ENXIO {
-        return WASI_ERRNO_NXIO;
-    }
-    if errno == libc::EOVERFLOW {
-        return WASI_ERRNO_OVERFLOW;
-    }
-    if errno == libc::EPERM {
-        return WASI_ERRNO_PERM;
-    }
-    if errno == libc::EPIPE {
-        return WASI_ERRNO_PIPE;
-    }
-    if errno == libc::EROFS {
-        return WASI_ERRNO_ROFS;
-    }
-    if errno == libc::ESPIPE {
-        return WASI_ERRNO_SPIPE;
-    }
-    if errno == libc::ETXTBSY {
-        return WASI_ERRNO_TXTBSY;
-    }
-    if errno == libc::EXDEV {
-        return WASI_ERRNO_XDEV;
-    }
-    errno
 }
 
 fn file_trace(args: std::fmt::Arguments<'_>) {
@@ -1017,16 +884,43 @@ fn file_trace(args: std::fmt::Arguments<'_>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn maps_common_file_errors_to_wasi_errno() {
-        assert_eq!(errno_for_guest(libc::EBADF), WASI_ERRNO_BADF);
-        assert_eq!(errno_for_guest(libc::EEXIST), WASI_ERRNO_EXIST);
-        assert_eq!(errno_for_guest(libc::ENOENT), WASI_ERRNO_NOENT);
-        assert_eq!(errno_for_guest(libc::ENOTDIR), WASI_ERRNO_NOTDIR);
-        assert_eq!(errno_for_guest(libc::ENOSPC), WASI_ERRNO_NOSPC);
+    fn opens_readonly_directory_handles() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wasmtime-mariadb-host-files-{}-{nonce}",
+            std::process::id()
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+
+        let files = HostFiles {
+            inner: Arc::new(Mutex::new(HostFilesInner {
+                next_fd: GUEST_FD_BASE,
+                files: HashMap::new(),
+                preopens: vec![PreopenMapping {
+                    guest: "/tmp".to_owned(),
+                    host: root.clone(),
+                }],
+            })),
+        };
+
+        let fd = files.open("/tmp/data/", libc::O_RDONLY, 0);
+        assert!(fd >= GUEST_FD_BASE, "directory open failed with {fd}");
+        let stat = files.fstat(fd).unwrap();
+        assert_ne!(stat.mode & libc::S_IFDIR, 0);
+        assert_eq!(files.sync(fd, true), 0);
+        assert_eq!(files.close(fd), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

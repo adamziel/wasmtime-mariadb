@@ -16,5 +16,9 @@ if [[ ! -f "$wasm" ]]; then
 fi
 
 cd "$root"
-MARIADBD_WASM="$wasm" cargo build --release
-ls -lh "$root/target/release/wasmtime-mariadb"
+MARIADBD_WASM="$wasm" cargo build --release \
+  --bin wasmtime-mariadb \
+  --bin wasmtime-mariadb-supervisor
+ls -lh \
+  "$root/target/release/wasmtime-mariadb" \
+  "$root/target/release/wasmtime-mariadb-supervisor"
