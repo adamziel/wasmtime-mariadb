@@ -8,13 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(windows)]
-use std::os::windows::fs::FileExt as WindowsFileExt;
+use std::os::windows::fs::{FileExt as WindowsFileExt, OpenOptionsExt};
 
 #[cfg(unix)]
 use rustix::fs::{FlockOperation, fcntl_lock};
 
 #[cfg(windows)]
 use fs4::{FileExt as Fs4FileExt, TryLockError};
+
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
 
 use wasmtime::{Caller, Linker, Result};
 
@@ -141,6 +144,12 @@ impl HostFiles {
         }
         if flags & (POSIX_O_TRUNC | WASI_O_TRUNC) != 0 {
             options.truncate(true);
+        }
+
+        #[cfg(windows)]
+        if host_path.is_dir() {
+            // Windows rejects directory handles unless CreateFile gets this flag.
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
         }
 
         let file = match options.open(&host_path) {
@@ -857,5 +866,45 @@ fn io_errno(err: std::io::Error) -> i32 {
 fn file_trace(args: std::fmt::Arguments<'_>) {
     if std::env::var_os("WASMTIME_MARIADB_FILE_TRACE").is_some() {
         eprintln!("[wasmtime-mariadb:files] {args}");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn opens_readonly_directory_handles() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wasmtime-mariadb-host-files-{}-{nonce}",
+            std::process::id()
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+
+        let files = HostFiles {
+            inner: Arc::new(Mutex::new(HostFilesInner {
+                next_fd: GUEST_FD_BASE,
+                files: HashMap::new(),
+                preopens: vec![PreopenMapping {
+                    guest: "/tmp".to_owned(),
+                    host: root.clone(),
+                }],
+            })),
+        };
+
+        let fd = files.open("/tmp/data/", libc::O_RDONLY, 0);
+        assert!(fd >= GUEST_FD_BASE, "directory open failed with {fd}");
+        let stat = files.fstat(fd).unwrap();
+        assert_ne!(stat.mode & libc::S_IFDIR, 0);
+        assert_eq!(files.close(fd), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

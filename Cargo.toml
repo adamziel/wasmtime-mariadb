@@ -16,7 +16,7 @@ wasmtime-wasi = { version = "46.0.1", default-features = false, features = ["p1"
 
 [target.'cfg(windows)'.dependencies]
 fs4 = "1.1.0"
-windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 wat = "1.0"
