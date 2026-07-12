@@ -32,7 +32,7 @@ jobs:
             --dir release-input
           tar -xzf release-input/mariadbd-wasm.tar.gz -C release-input
 
-      - name: Build native runner
+      - name: Build Wasmtime runner
         run: |
           MARIADBD_WASM="$PWD/release-input/mariadbd" \
             cargo build --release
@@ -132,7 +132,7 @@ jobs:
             --dir release-input
           tar -xzf release-input/mariadbd-wasm.tar.gz -C release-input
 
-      - name: Build native runner
+      - name: Build Wasmtime runner
         run: |
           rustup target add aarch64-apple-darwin
           MARIADBD_WASM="$PWD/release-input/mariadbd" \

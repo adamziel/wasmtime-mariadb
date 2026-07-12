@@ -969,7 +969,7 @@ fn errno_for_guest(errno: i32) -> i32 {
     if errno == libc::ENOMEM {
         return WASI_ERRNO_NOMEM;
     }
-    if errno == libc::ENOSPC {
+    if errno == libc::ENOSPC || errno == libc::EDQUOT {
         return WASI_ERRNO_NOSPC;
     }
     if errno == libc::ENOSYS {
@@ -1028,5 +1028,6 @@ mod tests {
         assert_eq!(errno_for_guest(libc::ENOENT), WASI_ERRNO_NOENT);
         assert_eq!(errno_for_guest(libc::ENOTDIR), WASI_ERRNO_NOTDIR);
         assert_eq!(errno_for_guest(libc::ENOSPC), WASI_ERRNO_NOSPC);
+        assert_eq!(errno_for_guest(libc::EDQUOT), WASI_ERRNO_NOSPC);
     }
 }

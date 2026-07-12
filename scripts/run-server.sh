@@ -204,7 +204,7 @@ if [[ -f "$runtime_log" ]]; then
 fi
 
 # Bash defers INT/TERM traps while it blocks in `wait` for a child. Polling
-# keeps Ctrl-C responsive while the native host runs in the background.
+# keeps Ctrl-C responsive while the Wasmtime host runs in the background.
 while kill -0 "$server_pid" 2>/dev/null; do
   sleep 0.1
 done

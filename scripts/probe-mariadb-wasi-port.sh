@@ -228,7 +228,7 @@ patch_mariadb_source() {
   ' "$src/mysql-test/main/insert_select.result"
 
   perl -0pi -e '
-    s/FOUND 1 \\/InnoDB: Cannot delete\\/update rows with cascading foreign key constraints that exceed max depth of 15\\.\\*\\/ in mysqld\\.1\\.err/NOT FOUND \\/InnoDB: Cannot delete\\/update rows with cascading foreign key constraints that exceed max depth of 15.*\\/ in mysqld.1.err/;
+    s~FOUND 1 /InnoDB: Cannot delete/update rows with cascading foreign key constraints that exceed max depth of 15\.\*/ in mysqld\.1\.err~NOT FOUND /InnoDB: Cannot delete/update rows with cascading foreign key constraints that exceed max depth of 15.*/ in mysqld.1.err~;
   ' "$src/mysql-test/suite/innodb/r/foreign_key.result"
 
   perl -0pi -e '

@@ -467,9 +467,18 @@ start_mtr_restart_watcher() {
     set +e
     local expect_file=""
     local processed_content=""
+    local processed_signature=""
     local observed_content=""
-    local content new_content line clean_line restart_tail
+    local observed_signature=""
+    local content signature new_content line clean_line restart_tail
     local restart_args=()
+
+    expect_file_signature() {
+      perl -MTime::HiRes=stat -e '
+        my @stat= stat($ARGV[0]) or exit 1;
+        printf "%d:%d:%.9f:%.9f\n", $stat[1], $stat[7], $stat[9], $stat[10];
+      ' "$1" 2>/dev/null
+    }
 
     printf 'restart watcher: watching %s\n' "$expect_dir" >"$watcher_log"
     while true; do
@@ -478,7 +487,9 @@ start_mtr_restart_watcher() {
           if [[ -e "$candidate" ]]; then
             expect_file="$candidate"
             processed_content=""
+            processed_signature=""
             observed_content=""
+            observed_signature=""
             printf 'restart watcher: using %s\n' "$expect_file" >>"$watcher_log"
             break
           fi
@@ -487,22 +498,31 @@ start_mtr_restart_watcher() {
 
       if [[ -n "$expect_file" && -r "$expect_file" ]]; then
         content="$(cat "$expect_file" 2>/dev/null || true)"
-        if [[ "$content" != "$processed_content" ]]; then
+        signature="$(expect_file_signature "$expect_file")"
+        if [[ -n "$signature" ]] && \
+          { [[ "$content" != "$processed_content" ]] || \
+            [[ "$signature" != "$processed_signature" ]]; }; then
           # mysqltest rewrites this file while switching from "wait" to a
-          # restart command. Require one stable observation so a partial
-          # "restart" is not mistaken for a restart without its arguments.
-          if [[ "$content" != "$observed_content" ]]; then
+          # restart command. It can also rewrite an identical command for the
+          # next restart. Require stable contents and metadata so neither a
+          # partial write nor a repeated command is lost.
+          if [[ "$content" != "$observed_content" || \
+                "$signature" != "$observed_signature" ]]; then
             observed_content="$content"
+            observed_signature="$signature"
             sleep 0.1
             continue
           fi
           observed_content=""
-          if [[ "$content" == "$processed_content"* ]]; then
+          observed_signature=""
+          if [[ "$content" != "$processed_content" && \
+                "$content" == "$processed_content"* ]]; then
             new_content="${content#"$processed_content"}"
           else
             new_content="$content"
           fi
           processed_content="$content"
+          processed_signature="$signature"
           while IFS= read -r line; do
             if [[ -z "$line" ]]; then
               continue
@@ -529,8 +549,10 @@ start_mtr_restart_watcher() {
             esac
           done <<< "$new_content"
         fi
-        if [[ "$content" == "$processed_content" ]]; then
+        if [[ "$content" == "$processed_content" && \
+              "$signature" == "$processed_signature" ]]; then
           observed_content=""
+          observed_signature=""
         fi
       fi
 

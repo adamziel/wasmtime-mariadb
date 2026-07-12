@@ -1,9 +1,9 @@
 # wasmtime-mariadb
 
 This is an experimental local-development runner for MariaDB 11.4. It is not
-MariaDB running natively. It is a patched `mariadbd` WebAssembly module running
-inside a native Wasmtime host. The host provides the parts WASI does not: the
-file calls MariaDB needs, TCP sockets, shared memory, and native threads.
+MariaDB running directly on the host. It is a patched `mariadbd` WebAssembly
+module running inside a Wasmtime host. The host provides the parts WASI does
+not: the file calls MariaDB needs, TCP sockets, shared memory, and host threads.
 
 It is useful when the target is a local WordPress-style development database.
 It is not a production database server. Do not point it at a production data
@@ -186,7 +186,7 @@ arguments and rejects `--debug-no-sync`.
 
 ### Host-runner options
 
-`BIN` selects a native runner binary. `RUNNER_ARGS` supplies Wasmtime-host
+`BIN` selects a Wasmtime runner binary. `RUNNER_ARGS` supplies Wasmtime-host
 arguments such as extra `--preopen` or `--env` values. It is split on shell
 whitespace, so it is not a quoting mechanism. Leave it alone for normal use.
 
@@ -236,7 +236,7 @@ These tests require a running server unless stated otherwise.
 | --- | --- | --- |
 | MySQL client smoke | `PORT=3307 ./scripts/test-mysql-client.sh` | TCP connection, InnoDB create/insert/read, `information_schema` engine lookup |
 | WordPress SQL smoke | `PORT=3307 ./scripts/test-wordpress-local-dev.sh` | WordPress-shaped schema, utf8mb4, LONGTEXT, indexes, transactions, routines, locale data |
-| Raw protocol benchmark smoke | `python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5` | Native Python implementation of the MySQL wire protocol can connect and issue SQL |
+| Raw protocol benchmark smoke | `python3 scripts/bench-tcp.py --port 3307 --clients 1 --rows 5 --batch-size 5` | Python implementation of the MySQL wire protocol can connect and issue SQL |
 | WordPress/WooCommerce integration | `WP_TESTS_DIR=/path/to/wordpress-tests-lib WOOCOMMERCE_DIR=/path/to/woocommerce ./scripts/test-wordpress-woocommerce-local-dev.sh` | Real WordPress/WooCommerce persistence against a configured upstream test environment |
 
 Set `HOST`, `PORT`, and `MYSQL` to override the smoke-test target and client.
@@ -334,7 +334,7 @@ crash test and benchmark notes are in
 ## Build Methods
 
 This is the full source path. It builds a WASI MariaDB module first, then
-embeds that module into the native Rust runner.
+embeds that module into the Rust Wasmtime runner.
 
 ```sh
 ./scripts/fetch-mariadb-source.sh
@@ -387,15 +387,15 @@ OUT_DIR=build/durability-recovery ./scripts/test-durability-recovery.sh
 ```
 
 This starts a real strict server, rejects a second server on the same data
-directory, verifies host file-lock and sync calls, kills the native host, and
+directory, verifies host file-lock and sync calls, kills the Wasmtime host, and
 checks committed-versus-uncommitted InnoDB rows after restart. It is a
 process-crash test, not a power-loss test.
 
 ### Direct external MTR
 
 MTR means MariaDB Test Run, the upstream integration/regression harness. It
-is source-checkout-only because it needs the MariaDB test tree and native
-MariaDB test tools. The entry point is:
+is source-checkout-only because it needs the MariaDB test tree and MariaDB
+test tools. The entry point is:
 
 ```sh
 OUT_DIR=build/mtr-extern-smoke ./scripts/run-mtr-extern-smoke.sh
@@ -411,6 +411,10 @@ MTR_BATCH_SIZE=4 \
 The runner starts the Wasmtime server, creates loopback TCP and Unix-socket
 proxies for MTR, restarts the server when MTR requests it, and records a
 per-test TSV result. A skip is a non-pass.
+
+`main.func_in` builds a disk-backed Aria temporary table larger than 140 MiB.
+Use a normal filesystem for `OUT_DIR`; a quota-limited `/tmp` can fail that
+case even though the server and test are correct.
 
 Key controls:
 
@@ -457,13 +461,13 @@ These are maintainer operations. They are not required to run the database.
 
 | Method | Command | Result |
 | --- | --- | --- |
-| Package an existing native runner | `./scripts/package-release.sh vX.Y.Z linux-x86_64 target/release/wasmtime-mariadb` | Platform archive in `dist/` |
-| Build release runner locally | `MARIADBD_WASM=/path/to/mariadbd cargo build --release` | Native runner with embedded Wasm |
+| Package an existing Wasmtime runner | `./scripts/package-release.sh vX.Y.Z linux-x86_64 target/release/wasmtime-mariadb` | Platform archive in `dist/` |
+| Build release runner locally | `MARIADBD_WASM=/path/to/mariadbd cargo build --release` | Wasmtime runner with embedded Wasm |
 | Build release assets in CI | `gh workflow run release-assets.yml --ref main -f tag=vX.Y.Z` | Linux x86_64 and macOS Apple Silicon archives, each smoke-tested before upload |
 | Install a release | `scripts/install-release.sh --version vX.Y.Z` | Verified extracted archive; run the printed `run-server.sh` command separately |
 
 The release workflow expects a `mariadbd-wasm.tar.gz` asset on the draft
-release before it runs. It builds only the native host per target; the MariaDB
+release before it runs. It builds only the Wasmtime host per target; the MariaDB
 Wasm module is the shared payload embedded into each host binary. Upload a
 `SHA256SUMS` file after both platform archives exist. Do not publish a release
 before that check works.
@@ -520,7 +524,7 @@ hand is debugging, not a supported deployment method.
 
 ## Architecture
 
-This is the whole arrangement. The native binary is a host. MariaDB is the
+This is the whole arrangement. The Wasmtime executable is a host. MariaDB is the
 guest. Keep those two layers separate when debugging.
 
 ```text
@@ -531,13 +535,13 @@ guest. Keep those two layers separate when debugging.
               |
               | build.rs embeds the module bytes
               v
- native wasmtime-mariadb executable
+ Wasmtime wasmtime-mariadb executable
               |
               +-- Wasmtime engine: threads, exceptions, shared memory
               +-- WASI Preview 1: args, env, stdio, preopened directories
               +-- HostFiles: POSIX-like file calls missing from plain WASI
-              +-- HostSockets: native TCP sockets exposed as Wasm imports
-              +-- Native thread spawn for MariaDB WASI pthreads
+              +-- HostSockets: host TCP sockets exposed as Wasm imports
+              +-- Host thread spawn for MariaDB WASI pthreads
               |
               v
         embedded mariadbd _start
@@ -560,7 +564,7 @@ to a separate `.wasm` file.
 ### Runtime path
 
 `run-server.sh` creates `RUN_DIR/data` and `RUN_DIR/tmp`, copies the minimal
-system-table bootstrap, then starts the native host from `RUN_DIR/data`. It
+system-table bootstrap, then starts the Wasmtime host from `RUN_DIR/data`. It
 preopens the host `RUN_DIR` as guest `/tmp`. MariaDB therefore sees:
 
 ```text
@@ -597,19 +601,35 @@ that Wasm has magically become a database filesystem.
 ### Thread and memory model
 
 MariaDB needs threads. The host enables Wasmtime shared memory, wasm threads,
-and wasm exceptions. A guest `wasi.thread-spawn` import starts a native Rust
+and wasm exceptions. A guest `wasi.thread-spawn` import starts a Rust host
 thread, creates a fresh Wasmtime store, reconnects the same shared Wasm memory,
 and invokes `wasi_thread_start`. File and socket tables are shared behind
 mutexes. This is enough for the tested local-development paths. It does not
-make the system magically equivalent to native MariaDB under failure or heavy
-contention.
+make the system magically equivalent to directly hosted MariaDB under failure
+or heavy contention.
+
+### WASI Preview 2 status
+
+The guest is a Preview 1 core module with WASI threads. It is not a Preview 2
+component. That distinction matters: the guest imports a shared Wasm memory
+and starts MariaDB pthreads by re-instantiating that module in separate
+Wasmtime stores.
+
+Wasmtime's Preview 1 adapter is implemented on top of its Preview 2 host
+implementation, so ordinary Preview 1 WASI operations already use that host
+layer internally. It does not make file descriptors shareable across the
+per-thread stores, and it does not provide a component-thread implementation
+for this module. Replacing `HostFiles`, `HostSockets`, or the thread launcher
+with a component today breaks InnoDB or DDL. The evidence, failed experiments,
+and conditions for a real migration are in
+[`docs/wasi-preview2-boundary-2026-07-12.md`](docs/wasi-preview2-boundary-2026-07-12.md).
 
 ### Test and release path
 
 MTR does not run inside the release binary. The external harness starts the
 same runner, fronts it with stable TCP/Unix proxies, watches MTR restart
 requests, and preserves per-test results. The release workflow downloads the
-same `mariadbd-wasm` payload, embeds it into Linux and macOS native hosts,
+same `mariadbd-wasm` payload, embeds it into Linux and macOS Wasmtime hosts,
 runs TCP/MySQL/WordPress smokes, packages the assets, and publishes checksums.
 That is the chain. There is no hidden daemon, container, or database service
 behind it.
