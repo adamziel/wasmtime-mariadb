@@ -345,6 +345,21 @@ impl HostFiles {
         let Some(host_file) = inner.files.get(&fd) else {
             return neg_errno(libc::EBADF);
         };
+
+        #[cfg(windows)]
+        if host_file
+            .file
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            // FlushFileBuffers does not support directory handles on Windows.
+            file_trace(format_args!(
+                "sync fd={fd} path={} data_only={data_only} skipped=directory",
+                host_file.path.display()
+            ));
+            return 0;
+        }
+
         let result = if data_only {
             host_file.file.sync_data()
         } else {
@@ -903,6 +918,7 @@ mod tests {
         assert!(fd >= GUEST_FD_BASE, "directory open failed with {fd}");
         let stat = files.fstat(fd).unwrap();
         assert_ne!(stat.mode & libc::S_IFDIR, 0);
+        assert_eq!(files.sync(fd, true), 0);
         assert_eq!(files.close(fd), 0);
 
         std::fs::remove_dir_all(root).unwrap();

@@ -551,6 +551,9 @@ hand is debugging, not a supported deployment method.
   certification. Storage-controller behavior, network filesystems, prepared
   XA recovery, replication, binlog, backup, and production durability remain
   unvalidated.
+- Windows cannot flush directory handles through this host API. Strict mode
+  still syncs data files, but directory sync is a no-op there; do not infer
+  power-loss durability for freshly created tables or DDL metadata.
 - MariaDB `COM_SHUTDOWN` does not reliably terminate the Wasmtime host yet.
   `stop-server` gives it a bounded grace period before terminating the child;
   do not treat it as a clean checkpoint/shutdown API.
