@@ -35,7 +35,9 @@ jobs:
       - name: Build Wasmtime runner
         run: |
           MARIADBD_WASM="$PWD/release-input/mariadbd" \
-            cargo build --release
+            cargo build --release \
+              --bin wasmtime-mariadb \
+              --bin wasmtime-mariadb-supervisor
 
       - name: Install MariaDB client
         run: |
@@ -136,7 +138,9 @@ jobs:
         run: |
           rustup target add aarch64-apple-darwin
           MARIADBD_WASM="$PWD/release-input/mariadbd" \
-            cargo build --release --target aarch64-apple-darwin
+            cargo build --release --target aarch64-apple-darwin \
+              --bin wasmtime-mariadb \
+              --bin wasmtime-mariadb-supervisor
 
       - name: Install mysql client
         run: |
@@ -211,5 +215,88 @@ jobs:
         run: |
           gh release upload "${{ inputs.tag }}" \
             dist/wasmtime-mariadb-macos-aarch64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  windows-x86_64:
+    name: Build windows-x86_64
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Download MariaDB wasm release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-input
+          gh release download "${{ inputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "mariadbd-wasm.tar.gz" \
+            --dir release-input
+          tar -xzf release-input/mariadbd-wasm.tar.gz -C release-input
+
+      - name: Build Wasmtime runner and supervisor
+        shell: bash
+        run: |
+          MARIADBD_WASM="$PWD/release-input/mariadbd" \
+            cargo build --release \
+              --bin wasmtime-mariadb \
+              --bin wasmtime-mariadb-supervisor
+
+      - name: Exercise lifecycle and recovery
+        shell: bash
+        run: |
+          python scripts/test-supervisor-lifecycle.py \
+            --run-dir "$PWD/build/release-supervisor-lifecycle" \
+            --supervisor "$PWD/target/release/wasmtime-mariadb-supervisor.exe" \
+            --runner "$PWD/target/release/wasmtime-mariadb.exe"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          ./scripts/package-release.ps1 `
+            "${{ inputs.tag }}" `
+            windows-x86_64 `
+            target/release/wasmtime-mariadb.exe
+
+      - name: Upload release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            dist/wasmtime-mariadb-windows-x86_64.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  checksums:
+    name: Upload SHA256SUMS
+    needs: [linux-x86_64, macos-aarch64, windows-x86_64]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download platform archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ inputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "wasmtime-mariadb-*.tar.gz" \
+            --pattern "wasmtime-mariadb-*.zip" \
+            --dir dist
+          cd dist
+          sha256sum wasmtime-mariadb-*.tar.gz wasmtime-mariadb-*.zip | sort > SHA256SUMS
+
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

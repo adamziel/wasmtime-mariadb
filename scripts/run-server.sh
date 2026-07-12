@@ -11,6 +11,8 @@ fi
 
 if [[ -n "${SUPERVISOR:-}" ]]; then
   supervisor="$SUPERVISOR"
+elif [[ -n "${BIN:-}" ]] && [[ -x "$(cd "$(dirname "$BIN")" && pwd)/wasmtime-mariadb-supervisor$suffix" ]]; then
+  supervisor="$(cd "$(dirname "$BIN")" && pwd)/wasmtime-mariadb-supervisor$suffix"
 elif [[ -x "$root/wasmtime-mariadb-supervisor$suffix" ]]; then
   supervisor="$root/wasmtime-mariadb-supervisor$suffix"
 else

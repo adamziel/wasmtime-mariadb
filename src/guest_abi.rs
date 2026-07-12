@@ -149,6 +149,14 @@ pub(crate) fn write(
 
 /// Converts a host errno to the numeric ABI used by WASI Preview 1 libc.
 pub(crate) fn errno_for_guest(errno: i32) -> i32 {
+    if errno == libc::ENOSPC {
+        return 51;
+    }
+    #[cfg(not(windows))]
+    if errno == libc::EDQUOT {
+        return 51;
+    }
+
     match errno {
         libc::EACCES => 2,
         libc::EADDRINUSE => 3,
@@ -184,7 +192,6 @@ pub(crate) fn errno_for_guest(errno: i32) -> i32 {
         libc::ENOENT => 44,
         libc::ENOMEM => 48,
         libc::ENOPROTOOPT => 50,
-        libc::ENOSPC | libc::EDQUOT => 51,
         libc::ENOSYS => 52,
         libc::ENOTCONN => 53,
         libc::ENOTDIR => 54,
@@ -229,6 +236,7 @@ mod tests {
         assert_eq!(errno_for_guest(libc::ENOENT), 44);
         assert_eq!(errno_for_guest(libc::ENOTDIR), 54);
         assert_eq!(errno_for_guest(libc::ENOSPC), 51);
+        #[cfg(not(windows))]
         assert_eq!(errno_for_guest(libc::EDQUOT), 51);
     }
 

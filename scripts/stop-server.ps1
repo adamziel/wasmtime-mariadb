@@ -7,6 +7,8 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 if ($env:SUPERVISOR) {
     $Supervisor = $env:SUPERVISOR
+} elseif ($env:BIN -and (Test-Path (Join-Path (Split-Path -Parent (Resolve-Path $env:BIN)) 'wasmtime-mariadb-supervisor.exe'))) {
+    $Supervisor = Join-Path (Split-Path -Parent (Resolve-Path $env:BIN)) 'wasmtime-mariadb-supervisor.exe'
 } elseif (Test-Path (Join-Path $Root 'wasmtime-mariadb-supervisor.exe')) {
     $Supervisor = Join-Path $Root 'wasmtime-mariadb-supervisor.exe'
 } else {

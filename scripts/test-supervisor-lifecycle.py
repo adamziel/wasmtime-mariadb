@@ -167,7 +167,7 @@ def parse_args():
 
 
 def main():
-    """Runs controlled stop/restart checks everywhere and a direct SIGINT check on Unix."""
+    """Runs controlled stop/restart checks everywhere and Unix signal checks."""
     args = parse_args()
     args.supervisor = args.supervisor.resolve()
     args.runner = args.runner.resolve()
@@ -212,6 +212,16 @@ def main():
             process = None
             endpoint = None
             print("sigint_lifecycle=pass")
+
+            process, endpoint, _ = start_supervisor(args, run_dir, 3)
+            runner_pid = endpoint["pid"]
+            process.terminate()
+            status = wait_for_exit(process, INTERRUPT_TIMEOUT_SECONDS, "supervisor after SIGTERM")
+            if status != 0 or process_is_alive(runner_pid):
+                raise RuntimeError("SIGTERM did not terminate the supervisor and runner cleanly")
+            process = None
+            endpoint = None
+            print("sigterm_lifecycle=pass")
         else:
             request_stop(args, run_dir)
             status = wait_for_exit(process, STOP_TIMEOUT_SECONDS, "Windows supervisor after stop request")

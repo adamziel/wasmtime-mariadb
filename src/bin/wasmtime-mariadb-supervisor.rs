@@ -19,6 +19,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use rustix::fs::{FlockOperation, flock};
+
+#[cfg(windows)]
+use fs4::{FileExt as Fs4FileExt, TryLockError};
+
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +36,7 @@ const MANIFEST_FILE: &str = ".wasmtime-mariadb-run.json";
 const ENDPOINT_FILE: &str = ".wasmtime-mariadb-endpoint.json";
 const STOP_FILE: &str = ".wasmtime-mariadb.stop";
 const LOCK_FILE: &str = ".wasmtime-mariadb.lock";
+const SUPERVISOR_LOCK_FILE: &str = ".wasmtime-mariadb-supervisor.lock";
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(12);
 
@@ -121,6 +128,11 @@ struct Endpoint {
     state: &'static str,
 }
 
+/// Holds the setup lock that covers manifests before the runner can lock data.
+struct SupervisorLock {
+    _file: File,
+}
+
 /// Fully resolved settings used for one child Wasmtime process.
 struct RunConfig {
     bin: PathBuf,
@@ -138,6 +150,7 @@ struct RunConfig {
     runner_args: Vec<String>,
     guest_args: Vec<String>,
     manifest: RunManifest,
+    _supervisor_lock: SupervisorLock,
 }
 
 /// The only two supported InnoDB durability modes for the local runner.
@@ -199,6 +212,7 @@ fn build_config(cli: &Cli) -> Result<RunConfig> {
     let run_dir = resolve_run_dir(cli.run_dir.as_deref())?;
     ensure_private_directory(&run_dir)?;
     let run_dir = fs::canonicalize(&run_dir)?;
+    let supervisor_lock = acquire_supervisor_lock(&run_dir)?;
     let data_dir = run_dir.join("data");
     let tmp_dir = run_dir.join("tmp");
     ensure_private_directory(&data_dir)?;
@@ -264,6 +278,7 @@ fn build_config(cli: &Cli) -> Result<RunConfig> {
         runner_args: parse_runner_args(env_value("RUNNER_ARGS"))?,
         guest_args: cli.guest_args.clone(),
         manifest,
+        _supervisor_lock: supervisor_lock,
     })
 }
 
@@ -465,6 +480,56 @@ fn write_stop_request(run_dir: &Path) -> Result<()> {
     write_atomic(&stop_path(&run_dir), b"stop\n")?;
     println!("stop requested for {}", run_dir.display());
     Ok(())
+}
+
+/// Acquires an independent lifetime lock before reading or creating metadata.
+fn acquire_supervisor_lock(run_dir: &Path) -> Result<SupervisorLock> {
+    let path = run_dir.join(SUPERVISOR_LOCK_FILE);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+
+    #[cfg(unix)]
+    {
+        if let Err(err) = flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            let errno = err.raw_os_error();
+            if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                return Err(format!(
+                    "MariaDB data directory is already in use; another wasmtime-mariadb supervisor holds {}",
+                    path.display()
+                )
+                .into());
+            }
+            return Err(std::io::Error::from(err).into());
+        }
+        Ok(SupervisorLock { _file: file })
+    }
+
+    #[cfg(windows)]
+    {
+        match Fs4FileExt::try_lock(&file) {
+            Ok(()) => Ok(SupervisorLock { _file: file }),
+            Err(TryLockError::WouldBlock) => Err(format!(
+                "MariaDB data directory is already in use; another wasmtime-mariadb supervisor holds {}",
+                path.display()
+            )
+            .into()),
+            Err(TryLockError::Error(err)) => Err(err.into()),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        drop(file);
+        Err(format!(
+            "run-directory locking is not supported on this host: {}",
+            path.display()
+        )
+        .into())
+    }
 }
 
 /// Creates or validates the compatibility record for one data directory.
@@ -934,11 +999,11 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
 }
 
 /// Applies owner-only permissions to metadata that reveals a local endpoint.
-fn restrict_file_permissions(path: &Path) -> Result<()> {
+fn restrict_file_permissions(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }

@@ -6,6 +6,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${SUPERVISOR:-}" ]]; then
   supervisor="$SUPERVISOR"
+elif [[ -n "${BIN:-}" ]] && [[ -x "$(cd "$(dirname "$BIN")" && pwd)/wasmtime-mariadb-supervisor" ]]; then
+  supervisor="$(cd "$(dirname "$BIN")" && pwd)/wasmtime-mariadb-supervisor"
 elif [[ -x "$root/wasmtime-mariadb-supervisor" ]]; then
   supervisor="$root/wasmtime-mariadb-supervisor"
 else
